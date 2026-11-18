@@ -1,6 +1,23 @@
 {
-  "universe_usage_history": [],
-  "assignment_cast_snapshots": {},
-  "transaction_id": "38b34d8e-4db9-46c5-9b3f-a808ed4f7fc0",
-  "registry_revision": 1
+  "assignment_cast_snapshots": {
+    "commissioning-2026-11-17-r2": {
+      "created_at": "2026-11-17T15:06:00-08:00",
+      "agents": [
+        "lead",
+        "physics",
+        "graphics",
+        "gameplay",
+        "tester"
+      ],
+      "universe": "descriptive"
+    }
+  },
+  "universe_usage_history": [
+    {
+      "universe": "descriptive",
+      "used_at": "2026-11-17T15:06:00-08:00"
+    }
+  ],
+  "transaction_id": "76dcf04a-5547-4bdb-b821-99afa6a4a578",
+  "registry_revision": 2
 }

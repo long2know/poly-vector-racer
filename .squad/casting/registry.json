@@ -1,8 +1,59 @@
 {
   "schema": "squad-agent-provenance/v1",
   "schema_version": 1,
-  "revision": 1,
-  "generated_at": "1970-01-01T00:00:00.000Z",
-  "agents": {},
-  "transaction_id": "38b34d8e-4db9-46c5-9b3f-a808ed4f7fc0"
+  "revision": 2,
+  "generated_at": "2026-11-17T15:06:00-08:00",
+  "agents": {
+    "lead": {
+      "display_name": "Lead",
+      "persistent_name": "Lead",
+      "role": "Architecture & Source Lead",
+      "universe": "descriptive",
+      "status": "active",
+      "created_at": "2026-11-17T15:06:00-08:00",
+      "updated_at": "2026-11-17T15:06:00-08:00",
+      "legacy_named": false
+    },
+    "physics": {
+      "display_name": "Physics",
+      "persistent_name": "Physics",
+      "role": "Vehicle Physics Engineer",
+      "universe": "descriptive",
+      "status": "active",
+      "created_at": "2026-11-17T15:06:00-08:00",
+      "updated_at": "2026-11-17T15:06:00-08:00",
+      "legacy_named": false
+    },
+    "graphics": {
+      "display_name": "Graphics",
+      "persistent_name": "Graphics",
+      "role": "WebGL2 & Technical Art Engineer",
+      "universe": "descriptive",
+      "status": "active",
+      "created_at": "2026-11-17T15:06:00-08:00",
+      "updated_at": "2026-11-17T15:06:00-08:00",
+      "legacy_named": false
+    },
+    "gameplay": {
+      "display_name": "Gameplay",
+      "persistent_name": "Gameplay",
+      "role": "Gameplay & Track Engineer",
+      "universe": "descriptive",
+      "status": "active",
+      "created_at": "2026-11-17T15:06:00-08:00",
+      "updated_at": "2026-11-17T15:06:00-08:00",
+      "legacy_named": false
+    },
+    "tester": {
+      "display_name": "Tester",
+      "persistent_name": "Tester",
+      "role": "QA & Browser Performance Engineer",
+      "universe": "descriptive",
+      "status": "active",
+      "created_at": "2026-11-17T15:06:00-08:00",
+      "updated_at": "2026-11-17T15:06:00-08:00",
+      "legacy_named": false
+    }
+  },
+  "transaction_id": "76dcf04a-5547-4bdb-b821-99afa6a4a578"
 }
