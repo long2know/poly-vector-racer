@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "playableProfile": "authored-flight",
+  "originalStockParity": false,
+  "simulationProject": "src/StuntRacer.Flight",
+  "simulationStepHz": 120,
+  "axes": "+X right, +Y up, +Z forward; positive pull-up raises nose; positive roll input lowers right wing",
+  "poseAuthority": "AircraftSnapshot.Forward/Up are normalized orthogonal C# vectors; WebGL must consume them, not invent attitude physics",
+  "worldAuthority": "FlightWorldDefinition supplies sea/islands/landing surfaces to native contacts and rendering",
+  "sourceRuleProject": "src/StuntRacer.FlightReference",
+  "sourceRuleBoundary": "Component kernel only: commands, propulsion/fuel/speed, control rates, target velocity, smoothing and bounded airborne position; attitude/contact/full-player step explicitly unavailable",
+  "sourceRuleData": "Caller-supplied tables mandatory; no ADF or original arrays embedded; synthetic tables are not stock data",
+  "sourcePin": "st-gr/interceptor-port@2475dcd65f454a37b41a2be27629ad958f34ddc5",
+  "sourceComponentProof": {"checks":40,"pinnedCCases":15546,"scalarComparisons":1010490,"discrepancies":0,"tables":"invented; not original data"},
+  "proof": {"modernChecks":25,"flightChecks":13,"classicChecks":20,"strictImportChecks":39,"actualCliInvocations":49,"node":"32 direct checks plus actual GPU/shader case verified separately","actualGpu":"NVIDIA RTX 3070","combinedBrowser":"artifacts/browser/run-oJIL5H/evidence.json"},
+  "catalog": {"includedCircuits":3,"externalAvailable":14,"unsupported":2,"flightActivities":1,"externalManifest":"artifacts/amiga-source/runtime/track-catalog.json"},
+  "sourceEvidence": "tests/StuntRacer.FlightReferenceChecks/EVIDENCE.md"
+}

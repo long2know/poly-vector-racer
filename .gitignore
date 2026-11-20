@@ -1,10 +1,29 @@
-# Squad: ignore runtime state (logs, inbox, sessions)
+# Squad: ignore transient runtime state; keep reviewed project history.
 # Note: .squad/casting/* is identity and MUST be committed to main, not ignored
 .squad/orchestration-log/
 .squad/log/
-.squad/decisions/inbox/
-.squad/sessions/
+.squad/decisions/inbox/*
+!.squad/decisions/inbox/copilot-integration-one-polygon-racing-project-with-separate-flight-ac.md
+!.squad/decisions/inbox/copilot-integration-verified-combined-playable-and-recovered-flight-ru.md
+!.squad/decisions/inbox/copilot-poly-vector-racer-release.md
+# Keep the reviewed delivery receipt, not other session exports.
+.squad/sessions/*
+!.squad/sessions/262ff4ad-f321-41ae-91a7-a567f8c4548a/
+.squad/sessions/262ff4ad-f321-41ae-91a7-a567f8c4548a/*
+!.squad/sessions/262ff4ad-f321-41ae-91a7-a567f8c4548a/delivery.json
 .squad/.scratch/
 .squad/.cache/
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
+
+**/bin/
+**/obj/
+artifacts/
+.tools/
+node_modules/
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+**/__pycache__/

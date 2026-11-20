@@ -1,0 +1,80 @@
+name: Container
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Run source and simulation tests
+        run: |
+          npm test
+          npm run test:simulation
+          npm run test:city
+          npm run test:stunts
+          npm run test:flight
+          npm run test:flight-data
+          npm run test:flight-reference
+          npm run test:compatibility
+      - name: Build and verify the non-root runtime at the game mount
+        run: |
+          docker build --tag poly-vector-racer:check .
+          STUNT_CONTAINER_IMAGE=poly-vector-racer:check node --test tests/hosting/container.test.mjs
+
+  publish:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'long2know/poly-vector-racer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: ghcr-poly-vector-racer
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/long2know/poly-vector-racer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Build the release image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$IMAGE:sha-$GITHUB_SHA" \
+            --tag "$IMAGE:latest" .
+          STUNT_CONTAINER_IMAGE="$IMAGE:sha-$GITHUB_SHA" node --test tests/hosting/container.test.mjs
+      - name: Publish to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:sha-$GITHUB_SHA"
+          current_main="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          if [[ "$current_main" == "$GITHUB_SHA" ]]; then
+            docker push "$IMAGE:latest"
+            docker buildx imagetools inspect "$IMAGE:latest"
+          else
+            echo 'Main advanced during the build; the commit tag was published without changing latest.'
+          fi

@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Independently authored, bounded original-reference flight-rule components; external tables required.</Description>
+  </PropertyGroup>
+</Project>
