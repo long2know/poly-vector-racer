@@ -1,0 +1,6 @@
+services:
+  web:
+    build:
+      context: .
+    image: ${POLY_VECTOR_RACER_IMAGE:-poly-vector-racer:local}
+    pull_policy: build

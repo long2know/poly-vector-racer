@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Nonexecuting, bounded original F/A-18 disk and runtime-data ingestion. No original data is distributed.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="reference-segments.tsv" />
+    <InternalsVisibleTo Include="StuntRacer.FlightDataChecks" />
+  </ItemGroup>
+</Project>

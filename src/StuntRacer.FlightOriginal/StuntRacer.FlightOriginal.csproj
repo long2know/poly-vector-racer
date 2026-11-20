@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../Engine/Engine.csproj" />
+    <ProjectReference Include="../StuntRacer.Flight/StuntRacer.Flight.csproj" />
+    <ProjectReference Include="../StuntRacer.FlightData/StuntRacer.FlightData.csproj" />
+    <ProjectReference Include="../StuntRacer.FlightReference/StuntRacer.FlightReference.csproj" />
+  </ItemGroup>
+</Project>

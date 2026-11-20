@@ -1,0 +1,18 @@
+services:
+  web:
+    environment:
+      STUNT_TRACK_CATALOG: /reference/tracks/track-catalog.json
+      STUNT_FLIGHT_PACKAGE: /reference/flight-package.json
+    volumes:
+      - type: bind
+        source: ${REFERENCE_TRACK_DIR:?Set REFERENCE_TRACK_DIR to the directory containing track-catalog.json}
+        target: /reference/tracks
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REFERENCE_FLIGHT_PACKAGE:?Set REFERENCE_FLIGHT_PACKAGE to the local original-flight package.json}
+        target: /reference/flight-package.json
+        read_only: true
+        bind:
+          create_host_path: false
