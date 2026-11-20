@@ -23,8 +23,10 @@ the local raw cache rather than repeatedly querying them. The work files take
 less than 1 GiB, and the compiled package is roughly 160 MiB on disk, not a
 download paid up front by the browser. `receipt.json` records exact input hashes.
 Keep this package outside the static bundle. A container can optionally mount it
-read-only through [`deploy/compose.world-flight.yaml`](../../deploy/compose.world-flight.yaml)
-with `WORLD_FLIGHT_DIR` set to the absolute package directory.
+under `/app/data/world-flight` through
+[`deploy/compose.world-flight.yaml`](../../deploy/compose.world-flight.yaml).
+Set `WORLD_FLIGHT_DIR` to the absolute package directory, or put the package
+under `${DOCKER_DATA}/games/poly-vector-racer/world-flight`.
 
 ## What is modeled
 

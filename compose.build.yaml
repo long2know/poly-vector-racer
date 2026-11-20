@@ -1,5 +1,5 @@
 services:
-  web:
+  poly-vector-racer:
     build:
       context: .
     image: ${POLY_VECTOR_RACER_IMAGE:-poly-vector-racer:local}

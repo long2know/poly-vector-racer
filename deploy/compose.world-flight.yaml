@@ -1,11 +1,10 @@
 services:
-  web:
+  poly-vector-racer:
     environment:
-      STUNT_WORLD_FLIGHT: /reference/world-flight/manifest.json
+      STUNT_WORLD_FLIGHT: /app/data/world-flight/manifest.json
     volumes:
       - type: bind
-        source: ${WORLD_FLIGHT_DIR:?Set WORLD_FLIGHT_DIR to the generated World Flight package directory}
-        target: /reference/world-flight
-        read_only: true
+        source: ${WORLD_FLIGHT_DIR:-${DOCKER_DATA:?Set DOCKER_DATA or WORLD_FLIGHT_DIR}/games/poly-vector-racer/world-flight}
+        target: /app/data/world-flight
         bind:
           create_host_path: false
