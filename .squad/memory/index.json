@@ -1,1 +1,82 @@
-[]
+[
+  {
+    "id": "68fd6da9-a720-4ac6-8679-39b083bb552d",
+    "class": "DECISION",
+    "loadGuidance": "ALWAYS",
+    "title": "Approved first-playable C# WASM runtime and Docker base-path deployment",
+    "path": ".squad/decisions/inbox/stephen-long-via-copilot-approved-first-playable-c-wasm-runtime-and-docker-base-path-depl-68fd6da9.md",
+    "status": "active",
+    "createdAt": "2026-11-18T17:45:51.057Z",
+    "updatedAt": "2026-11-18T17:45:51.057Z"
+  },
+  {
+    "id": "cedbf18c-40ed-440b-af0d-da8516cccef3",
+    "class": "DECISION",
+    "loadGuidance": "ALWAYS",
+    "title": "2026-11-18: Additive private-data Amiga compatibility scope",
+    "path": ".squad/decisions/inbox/stephen-long-via-squad-coordinator-2026-11-18-additive-private-data-amiga-compatibility-scope-cedbf18c.md",
+    "status": "active",
+    "createdAt": "2026-11-18T19:41:10.736Z",
+    "updatedAt": "2026-11-18T19:41:10.736Z"
+  },
+  {
+    "id": "1c2aea6e-282f-4c36-8de8-a129a71ca65c",
+    "class": "LOCAL",
+    "loadGuidance": "ON-DEMAND",
+    "title": "Proposal: strict v1 raw-state trace contract",
+    "path": ".squad/memory/local/physics-proposal-strict-v1-raw-state-trace-contract-1c2aea6e.md",
+    "status": "active",
+    "createdAt": "2026-11-18T19:47:36.936Z",
+    "updatedAt": "2026-11-18T19:47:36.936Z"
+  },
+  {
+    "id": "6db0ac4d-6cee-4d1c-8505-e780716216f8",
+    "class": "LOCAL",
+    "loadGuidance": "ON-DEMAND",
+    "title": "Gameplay handoff proposal: private decoded importer and canonical exact edges",
+    "path": ".squad/memory/local/gameplay-gameplay-handoff-proposal-private-decoded-importer-and-canonical-6db0ac4d.md",
+    "status": "active",
+    "createdAt": "2026-11-18T19:59:10.852Z",
+    "updatedAt": "2026-11-18T19:59:10.852Z"
+  },
+  {
+    "id": "93669885-fc9b-4a48-9898-9cb8dd1da2fb",
+    "class": "DECISION",
+    "loadGuidance": "ALWAYS",
+    "title": "2026-11-18: Runnable optional Classic mode; authored default preserved",
+    "path": ".squad/decisions/inbox/stephen-long-via-squad-coordinator-2026-11-18-runnable-optional-classic-mode-authored-default-prese-93669885.md",
+    "status": "active",
+    "createdAt": "2026-11-18T21:00:13.601Z",
+    "updatedAt": "2026-11-18T21:00:13.601Z"
+  },
+  {
+    "id": "b71e1446-3d08-4517-a0aa-7a36dd2e432a",
+    "class": "LOCAL",
+    "loadGuidance": "ON-DEMAND",
+    "title": "Gameplay real reference extractor and frozen native-height package handoff",
+    "path": ".squad/memory/local/gameplay-gameplay-real-reference-extractor-and-frozen-native-height-packa-b71e1446.md",
+    "status": "active",
+    "createdAt": "2026-11-18T21:26:58.341Z",
+    "updatedAt": "2026-11-18T21:26:58.341Z"
+  },
+  {
+    "id": "55be9078-fd8a-4065-8c4a-7a444fa8dd84",
+    "class": "DECISION",
+    "loadGuidance": "ALWAYS",
+    "title": "2026-11-18: Runnable optional Classic candidate and real LittleRamp delivered",
+    "path": ".squad/decisions/inbox/stephen-long-via-squad-coordinator-2026-11-18-runnable-optional-classic-candidate-and-real-littlera-55be9078.md",
+    "status": "active",
+    "createdAt": "2026-11-18T21:30:39.938Z",
+    "updatedAt": "2026-11-18T21:30:39.938Z"
+  },
+  {
+    "id": "38686596-17b3-4f1c-bcad-51fd50702b69",
+    "class": "LOCAL",
+    "loadGuidance": "ON-DEMAND",
+    "title": "Original-data flight runtime contract and qualification",
+    "path": ".squad/memory/local/copilot-original-data-flight-runtime-contract-and-qualification-38686596.md",
+    "status": "active",
+    "createdAt": "2026-11-19T03:26:14.421Z",
+    "updatedAt": "2026-11-19T03:26:14.421Z"
+  }
+]

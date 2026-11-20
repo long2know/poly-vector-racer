@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111916">
+  <meta name="description" content="Stunt racing, open-city driving, and supersonic flight in one low-poly browser game.">
+  <title>Poly Vector Racer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111916'/%3E%3Cpath d='M9 43h14l13-23h19v9H41L28 52H9z' fill='%23ff612e'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body data-phase="loading">
+  <main id="viewport" aria-label="Poly Vector Racer">
+    <canvas id="game" tabindex="0" aria-label="3D racing game. Arrow keys or WASD drive, Space boosts. Touchscreens have a steering pad and gas pedal. Open Controls for all options."></canvas>
+    <div class="vignette" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Poly Vector Racer home">
+        <svg viewBox="0 0 38 32" aria-hidden="true"><path d="M1 22h10L23 2h14v8h-9L16 30H1z" fill="currentColor"/></svg>
+        <span>POLY VECTOR<br><b>RACER</b></span>
+        <span class="edition">BROWSER<br>EDITION / 01</span>
+      </a>
+      <span class="topline">NO GUARDRAILS. <strong>ALL NERVE.</strong></span>
+      <nav class="toolbar" aria-label="Game settings">
+        <button id="garage-button" type="button" title="End the current run and choose an experience">GARAGE</button>
+        <button id="camera-button" type="button" title="Change camera (C)">CHASE <span>C</span></button>
+        <button id="flight-hud-button" type="button" title="Toggle chase-view HUD (V)" aria-label="Show chase-view HUD" aria-keyshortcuts="V" aria-pressed="true" hidden>HUD ON</button>
+        <button id="sound-button" type="button" aria-pressed="false" title="Toggle sound (M)">SOUND ON</button>
+        <button id="capture-button" type="button" title="Record the game canvas and game audio to WebM">REC</button>
+        <button id="fullscreen-button" type="button" title="Toggle fullscreen (F)" aria-label="Toggle fullscreen">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <button id="help-button" type="button" title="Controls and settings (H)" aria-label="Controls and settings">?</button>
+      </nav>
+    </header>
+
+    <section id="menu" class="menu" aria-labelledby="menu-title">
+      <div class="eyebrow"><span class="live-dot"></span> A CLASSIC. TAKEN HIGHER.</div>
+      <h1 id="menu-title">DRIVE<br>ABOVE<br><em>IT ALL.</em></h1>
+      <p id="menu-intro" class="intro">A ribbon of tarmac. A very long way down.<br>Find your line. Save your boost. Stick the landing.</p>
+      <nav class="experience-picker" aria-label="Choose a driving or flight experience">
+        <button id="experience-city" type="button" data-experience="free-roam" disabled>CITY<small>OPEN WORLD</small></button>
+        <button id="experience-hard" type="button" data-experience="hard-driving" disabled>HARD DRIVIN'<small>PROVING GROUND</small></button>
+        <button id="experience-stunts" type="button" data-experience="stunts" disabled>STUNTS<small>LOOP PARK</small></button>
+        <button id="experience-flight" type="button" data-experience="flight" disabled>FLIGHT<small>AMIGA / JET</small></button>
+      </nav>
+      <label class="menu-mode" for="game-mode">GAME MODE
+        <select id="game-mode" disabled>
+          <option value="time-attack">TIME ATTACK</option>
+          <option value="race">HEAD-TO-HEAD / AI RIVAL</option>
+          <option value="checkpoint-run">CHECKPOINT RUN / BEAT THE CLOCK</option>
+          <optgroup label="Open-world city / Midtown-inspired">
+            <option value="free-roam">CITY CRUISE / FREE DRIVE</option>
+            <option value="city-blitz">CITY BLITZ / CHECKPOINT RUSH</option>
+            <option value="city-circuit">CITY CIRCUIT / STREET RACE</option>
+          </optgroup>
+          <optgroup label="Stunt-driving experiences">
+            <option value="hard-driving">HARD DRIVIN' / PROVING GROUND</option>
+            <option value="stunts">STUNTS / LOOP &amp; JUMP PARK</option>
+          </optgroup>
+          <option value="flight">FLIGHT / INTERCEPTOR BAY</option>
+          <option value="flight-original" disabled>FLIGHT / AMIGA ORIGINAL MODEL</option>
+          <option value="flight-world" disabled>WORLD FLIGHT / UNITED STATES</option>
+        </select>
+      </label>
+      <button id="start-button" class="primary" type="button" disabled>
+        <span id="start-label">WARMING UP</span><span class="button-arrow" aria-hidden="true">&#8599;</span>
+      </button>
+      <p id="load-status" class="load-status" role="status">Loading the C# WebAssembly engine...</p>
+      <button id="air-start-button" class="secondary flight-only" type="button">AIR START / SKIP THE RUNWAY</button>
+      <button id="world-flight-button" class="secondary" type="button" disabled>WORLD FLIGHT / SEATTLE &amp; U.S.</button>
+      <label class="menu-mode world-flight-only" for="world-departure-menu">DEPARTURE<select id="world-departure-menu" disabled></select></label>
+      <div class="quick-controls keyboard-hints racing-only"><kbd>W A S D</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>BOOST</span></div>
+      <div class="quick-controls keyboard-hints flight-only"><kbd>ARROWS</kbd><span>FLY</span><kbd>+ / -</kbd><span>THROTTLE</span></div>
+      <div class="quick-controls touch-hints racing-only"><span>TWO THUMBS: STEER LEFT / HOLD GAS RIGHT<br>SLIDE UP ON GAS FOR TURBO</span></div>
+      <div class="quick-controls touch-hints flight-only"><span>LEFT PAD: BANK / DRAG UP TO CLIMB<br>HOLD GAS RIGHT / SLIDE UP FOR AFTERBURNER</span></div>
+      <button class="text-button" id="menu-help" type="button">Controls / touch / gamepad setup <span aria-hidden="true">&#8594;</span></button>
+    </section>
+
+    <aside class="circuit-card" aria-label="Circuit information">
+      <span id="circuit-mode" class="eyebrow">01 / TIME ATTACK</span>
+      <h2 id="circuit-name">SKYLINE CIRCUIT</h2>
+      <label class="track-picker" for="track-select">CHOOSE TRACK<select id="track-select" disabled></select></label>
+      <label class="track-picker vehicle-picker racing-only" for="vehicle-quick">VEHICLE BODY<select id="vehicle-quick"></select></label>
+      <div class="circuit-facts"><span><b id="track-length">---</b> <span id="track-length-unit">METRES</span></span><span><b id="circuit-laps">3</b> LAPS</span><span><b>0</b> GUARDRAILS</span></div>
+      <div class="circuit-rule"></div>
+      <p id="mode-description">Elevated corners. Crests that fight back.<br>One car. You against the clock.</p>
+      <button id="landmark-tour-button" type="button" class="secondary original-flight-only">LANDMARK TOUR / BRIDGE APPROACH</button>
+    </aside>
+
+    <section id="hud" class="hud" aria-label="Race dashboard" hidden>
+      <div class="race-timing">
+        <div class="lap-box"><span id="lap-heading" class="eyebrow">LAP</span><strong><span id="lap">01</span><small id="lap-total"> / 03</small></strong></div>
+        <div><span id="time-heading" class="eyebrow">CURRENT LAP</span><strong id="lap-time">00:00.000</strong></div>
+        <div class="best-box"><span id="best-heading" class="eyebrow">BEST LAP</span><strong id="best-time">--:--.---</strong></div>
+        <div id="race-position-box" hidden><span class="eyebrow">POSITION</span><strong id="race-position">1 / 2</strong></div>
+      </div>
+      <div class="minimap">
+        <svg id="map" viewBox="0 0 160 160" aria-label="Track map">
+          <path id="map-water" class="world-flight-only" fill="#236e7c" opacity=".8"/>
+          <path id="map-outline" fill="none" stroke="#14201e" stroke-width="8" stroke-linejoin="round"/>
+          <path id="map-road" fill="none" stroke="#d4d7c7" stroke-width="2.5" stroke-linejoin="round"/>
+          <circle id="map-start" r="3" fill="#d4d7c7"/>
+          <circle id="map-player" r="4.5" fill="#ff6536" stroke="#fff1d2" stroke-width="1.5"/>
+          <circle id="map-target" r="4" fill="#a8f542" stroke="#fff1d2" stroke-width="1" hidden/>
+        </svg>
+        <span id="map-label">SKYLINE / TIME ATTACK</span>
+      </div>
+      <div class="telemetry">
+        <div class="meter-label"><span id="boost-label">TURBO RESERVE</span><strong id="boost-value">100%</strong></div>
+        <div class="meter boost-meter"><i id="boost-fill"></i></div>
+        <div class="meter-label damage-label"><span id="integrity-label">CHASSIS INTEGRITY</span><strong id="integrity-value">100%</strong></div>
+        <div class="meter damage-meter"><i id="integrity-fill"></i></div>
+        <div class="recovery-hint"><kbd>R</kbd> RECOVER <span class="separator">/</span> <kbd>P</kbd> PAUSE</div>
+      </div>
+      <div class="speedometer">
+        <div id="gear" class="gear">N</div>
+        <div class="speed-readout"><strong id="speed">000</strong><span id="speed-unit">KM/H</span></div>
+        <div id="flight-mach" class="flight-mach flight-only" hidden></div>
+        <div class="rev-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div id="race-event" class="race-event" role="status"></div>
+      <div id="driving-guidance" class="driving-guidance" hidden>
+        <span id="route-arrow" class="route-arrow" aria-hidden="true">&#8593;</span>
+        <div><strong id="world-district"></strong><span id="world-objective"></span></div>
+      </div>
+      <div id="flight-guidance" class="flight-guidance flight-only" aria-label="Flight attitude, heading and navigation">
+        <div class="flight-heading"><strong id="flight-heading">000</strong><span>HDG</span></div>
+        <div class="combiner-metrics"><span id="cockpit-airspeed"></span><span id="cockpit-altitude"></span></div>
+        <svg viewBox="-160 -85 320 170" aria-label="Enhanced pitch ladder and bank reference">
+          <defs><clipPath id="flight-ladder-clip"><rect x="-110" y="-62" width="220" height="124"/></clipPath></defs>
+          <g clip-path="url(#flight-ladder-clip)">
+            <g id="flight-ladder" class="pitch-ladder">
+              <path d="M-100 0H-28M28 0H100"/>
+              <path d="M-58 -15H-30M30 -15H58M-70 -30H-30M30 -30H70M-58 -45H-30M30 -45H58M-70 -60H-30M30 -60H70M-58 -75H-30M30 -75H58M-70 -90H-30M30 -90H70"/>
+              <path class="negative-pitch" d="M-58 15H-30M30 15H58M-70 30H-30M30 30H70M-58 45H-30M30 45H58M-70 60H-30M30 60H70M-58 75H-30M30 75H58M-70 90H-30M30 90H70"/>
+              <g class="pitch-labels"><text x="-91" y="-27">10</text><text x="79" y="-27">10</text><text x="-91" y="-57">20</text><text x="79" y="-57">20</text><text x="-91" y="33">-10</text><text x="79" y="33">-10</text><text x="-91" y="63">-20</text><text x="79" y="63">-20</text></g>
+            </g>
+          </g>
+          <path class="flight-reticle" d="M-29 0H-10L-5 5H5L10 0H29M0 -8V-3M-132 0H-117M117 0H132"/>
+        </svg>
+        <div id="flight-nav" class="flight-nav">BAY RUNWAY</div>
+        <div class="flight-configuration"><span id="flight-config">GEAR DOWN</span><span id="flight-load">1.0 G</span><span id="cockpit-mach"></span></div>
+        <p id="world-stream-status" class="world-flight-only"></p>
+      </div>
+      <div id="ghost-status" class="ghost-status" role="status" hidden></div>
+      <div id="countdown" class="countdown" aria-live="polite"></div>
+      <button id="pause-button" class="pause-button" type="button" aria-label="Pause race">II</button>
+    </section>
+
+    <section id="pause-panel" class="modal-panel" aria-labelledby="pause-title" hidden>
+      <span class="eyebrow">TAKE A BREATHER</span>
+      <h2 id="pause-title">ON HOLD.</h2>
+      <p>Your run is paused. The track can wait.</p>
+      <button id="resume-button" type="button" class="primary">BACK TO THE TRACK <span aria-hidden="true">&#8599;</span></button>
+      <button id="restart-button" type="button" class="secondary">RESTART RUN</button>
+      <button id="garage-pause" type="button" class="secondary">GARAGE / CHOOSE MODE</button>
+    </section>
+    <section id="finish-panel" class="modal-panel" aria-labelledby="finish-title" hidden>
+      <span id="finish-eyebrow" class="eyebrow">THREE LAPS. NICELY DONE.</span>
+      <h2 id="finish-title">RUN COMPLETE.</h2>
+      <div class="finish-times"><span><span id="finish-time-label">TOTAL TIME</span><strong id="finish-time"></strong></span><span><span id="finish-best-label">BEST LAP</span><strong id="finish-best"></strong></span></div>
+      <button id="again-button" type="button" class="primary">ONE MORE RUN <span aria-hidden="true">&#8599;</span></button>
+      <button id="garage-finish" type="button" class="secondary">GARAGE / CHOOSE MODE</button>
+    </section>
+    <section id="error-panel" class="modal-panel" role="alert" hidden>
+      <span class="eyebrow">PIT STOP REQUIRED</span>
+      <h2>ENGINE STOPPED.</h2>
+      <p id="error-message"></p>
+      <button id="reload-button" type="button" class="primary">RELOAD GAME</button>
+    </section>
+
+    <div id="touch-controls" aria-label="Touch driving controls">
+      <div class="touch-steer-group">
+        <div id="touch-steering" role="slider" aria-label="Drag horizontally to steer" aria-valuemin="-1" aria-valuemax="1" aria-valuenow="0">
+          <span id="steer-label" class="steer-label">DRAG TO STEER</span><span id="touch-steering-thumb" aria-hidden="true"></span>
+        </div>
+        <div class="touch-arrows"><button data-control="left" aria-label="Steer left">&#9664;</button><button data-control="right" aria-label="Steer right">&#9654;</button></div>
+      </div>
+      <div class="touch-pedal-group">
+        <div class="touch-actions"><button id="touch-recover" class="touch-recover" type="button">RECOVER</button><button id="touch-gear" class="touch-gear flight-only" type="button">GEAR DN</button><button id="touch-hook" class="touch-hook original-flight-only" type="button">HOOK UP</button></div>
+        <div class="touch-pedals">
+          <button data-control="brake">BRAKE</button>
+          <button data-control="throttle" class="touch-gas">GAS<small id="touch-gas-hint">SLIDE UP FOR TURBO</small></button>
+          <button data-control="boost" class="touch-boost">BOOST</button>
+        </div>
+      </div>
+    </div>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <div id="stats" class="stats" hidden></div>
+    <footer class="footer"><span id="track-mode">INSPIRED BY THE AMIGA ORIGINAL / AUTHORED PLAYABLE PROTOTYPE</span><span class="world-flight-only world-credit">Elevation: USGS 3DEP / NOAA NCEI · Coast: Natural Earth · Buildings: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></span><span id="device-label"><i class="device-dot"></i> KEYBOARD READY</span></footer>
+  </main>
+
+  <dialog id="help-dialog">
+    <div class="dialog-top"><span class="eyebrow">THE DRIVER'S BRIEFING</span><button id="close-help" aria-label="Close controls">X</button></div>
+    <h2>GET A GRIP.</h2>
+    <p class="racing-only">Keep all four tyres on the ribbon. Brake before a bend, then get back on the power. Use turbo on the straights and carry speed over the crests.</p>
+    <div class="control-columns racing-only">
+      <div><h3>KEYBOARD</h3><dl><dt>Accelerate / brake</dt><dd><kbd>W / S</kbd> or <kbd>&uarr; / &darr;</kbd></dd><dt>Steer</dt><dd><kbd>A / D</kbd> or <kbd>&larr; / &rarr;</kbd></dd><dt>Turbo</dt><dd><kbd>SPACE</kbd> or <kbd>SHIFT</kbd></dd><dt>Recover / pause</dt><dd><kbd>R</kbd> / <kbd>P</kbd></dd><dt>Camera / sound</dt><dd><kbd>C</kbd> / <kbd>M</kbd></dd><dt>Fullscreen / stats</dt><dd><kbd>F</kbd> / <kbd>F3</kbd></dd></dl></div>
+      <div><h3>CONTROLLER</h3><dl><dt>Accelerate / brake</dt><dd>RT / LT</dd><dt>Steer</dt><dd>Left stick or D-pad</dd><dt>Turbo</dt><dd>A / Cross or RB</dd><dt>Recover</dt><dd>B / Circle</dd><dt>Camera / pause</dt><dd>Y / Triangle / Start</dd></dl><p class="small">Connect a controller and press a button. For USB joystick adapters, select the classic layout below.</p></div>
+    </div>
+    <div class="flight-only flight-brief">
+      <h3>FLIGHT / INTERCEPTOR BAY</h3>
+      <p>Throttle up along the runway, then gently pull back above about 130 knots.
+        Retract gear after takeoff. Bank to turn; low speed or excessive pitch can stall.
+        Land aligned with the runway, gear down, with a gentle descent.
+        Air Start puts you already flying for immediate practice.</p>
+      <dl><dt>Bank / pitch</dt><dd>A/D or left/right; W/Up nose down, S/Down nose up</dd>
+        <dt>Throttle / afterburner</dt><dd>+ / -; Space or Shift</dd>
+        <dt>Rudder / airbrake</dt><dd>Q/E; B or Backspace</dd>
+        <dt>Gear / recover</dt><dd>G / R</dd>
+        <dt>Camera / chase HUD</dt><dd>C switches view; V or the HUD button toggles the chase overlay</dd>
+        <dt>Pause / stats</dt><dd>P / F3; M sound, F fullscreen</dd>
+        <dt>Controller</dt><dd>Left stick flies; right stick X rudder; RT/LT change throttle; A afterburner; X airbrake; left-stick click gear</dd>
+        <dt>Touch</dt><dd>Drag left pad to bank; drag UP to climb. Hold GAS right; slide up for afterburner.</dd></dl>
+      <button id="flight-air-start" type="button" class="secondary">AIR START / FLIGHT PRACTICE</button>
+      <button id="flight-gear-button" type="button" class="secondary">GEAR DOWN / G</button>
+      <button id="flight-carrier-start" type="button" class="secondary original-flight-only">CARRIER START / ORIGINAL CATAPULT</button>
+      <button id="flight-landmark-tour" type="button" class="secondary original-flight-only">LANDMARK TOUR / ORIGINAL BRIDGE SCENERY</button>
+      <button id="flight-hook-button" type="button" class="secondary original-flight-only">ARRESTOR HOOK / K</button>
+      <p class="small authored-flight-only traditional-flight-only">Modern flight uses newly authored jet aerodynamics and scenery.
+        Choose the Amiga original model below to use your disk's actual flight tables, contact geometry and world.</p>
+      <p class="small original-flight-only">Original mode runs the recovered Amiga player rules with verified
+        data from the supplied disk. The reference clock is eight steps per second; enhanced WebGL rendering
+        interpolates independently. K or LB toggles the arrestor hook. Use the carrier start to practice
+        original catapult launches. This is enhanced graphics, not a pixel-identical Amiga display.</p>
+      <p class="small original-flight-only">Landmark Tour starts you near an original suspension bridge.
+        The source world includes decoded bridge spans, ground patterns and city structures.
+        Moving service vehicles, walking ground crew and ambient air traffic are newly authored
+        world enhancements, not a claim that original combat/mission AI has been ported.</p>
+      <div class="world-flight-only">
+        <h3>WORLD FLIGHT / SELECT A DEPARTURE</h3>
+        <select id="world-departure" aria-label="World Flight departure" disabled></select>
+        <p class="small">For supersonic flight, raise throttle to 100%, retract the gear (G), and hold Space
+          for afterburner. Try the Cascades high-altitude cruise departure for a fast start.</p>
+        <p class="small">Seattle and San Francisco have mapped buildings; Rainier, Yosemite and Grand Canyon
+          have finer terrain. Fly the lower 48 as one region, or choose Alaska or Hawaii.
+          Scenic departures start airborne; Boeing Field is the modeled landing strip.
+          For play, not real-world navigation. Terrain: USGS 3DEP and NOAA NCEI ETOPO 2022.
+          Coastline: Natural Earth.
+          Buildings: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors, ODbL</a>.
+          Unmeasured heights are estimated. Iconic landmark models are authored for the game.</p>
+      </div>
+    </div>
+    <div class="preferences">
+      <label>CONTROLLER LAYOUT<select id="controller-layout"><option value="standard">Standard gamepad</option><option value="joystick">Classic joystick (up/down + fire)</option></select></label>
+      <label class="racing-only">VEHICLE BODY / SHARED DRIVING PHYSICS<select id="vehicle-style"></select></label>
+      <label>GRAPHICS<select id="graphics-quality"><option value="high">High fidelity</option><option value="balanced">Balanced / lower GPU load</option></select></label>
+      <label>PHYSICS MODEL<select id="physics-mode" disabled><option value="modern">Modern / responsive (default)</option><option id="classic-option" value="classic" disabled>Classic / Amiga-derived reference</option><option id="flight-original-option" value="flight-original" hidden disabled>Amiga F/A-18 / verified disk data</option></select></label>
+      <label>GAME MODE<select id="session-mode" disabled><option value="time-attack">Time attack / best lap</option><option value="race">Head-to-head / AI rival</option><option value="checkpoint-run">Checkpoint run / timed gates</option><option value="free-roam">City Cruise / open-world driving</option><option value="city-blitz">City Blitz / checkpoint rush</option><option value="city-circuit">City Circuit / street race</option><option value="hard-driving">Hard Drivin' / proving ground</option><option value="stunts">Stunts / loop &amp; jump park</option><option value="flight">Flight / modern jet</option><option value="flight-original" disabled>Flight / Amiga original model</option><option value="flight-world" disabled>World Flight / United States</option></select></label>
+      <label>ON-SCREEN TOUCH CONTROLS<select id="touch-mode"><option value="auto">Auto / detect touchscreen</option><option value="on">On / phone or tablet controls</option><option value="off">Off / keyboard or controller</option></select></label>
+      <label>TRACK<select id="session-track" disabled></select></label>
+      <label>BEST-LAP GHOST / TIME ATTACK<select id="ghost-mode" disabled><option value="on">On / record and replay clean best lap</option><option value="off">Off / hide ghost</option></select></label>
+    </div>
+    <p id="track-catalog-status" class="small" role="status"></p>
+    <p class="small racing-only">CITY CRUISE is free driving through a connected polygon city with moving traffic and sidewalk activity.
+      CITY BLITZ and CITY CIRCUIT use its streets for races. HARD DRIVIN' selects a separate banked proving ground
+      with timed checkpoints. STUNTS selects its own loop-and-jump course with speed-dependent contacts and stunt scoring.
+      These are newly authored inspired experiences, not imported historical game engines.</p>
+    <p class="small racing-only">Checkpoint Run: clear the lime-green gates in order before the timer expires.
+      Gates award extra time; recovery costs time. Time Attack records a clean completed lap
+      and replays your best as a translucent purple ghost on later laps or a restart.
+      Recovery invalidates that lap's recording. Ghosts never collide; recordings stay in
+      this session and clear when changing track or game mode. This is not a Stunts replay-file importer.</p>
+    <p class="small racing-only">Phone/tablet: drag the left steering pad and hold GAS with your right thumb.
+      Slide that thumb upward for turbo; release or slide back to stop turbo.
+      BRAKE, BOOST and RECOVER are also buttons. Camera, pause and sound work by touch.
+      No controller is required. Landscape gives the widest road view; portrait is supported.</p>
+    <section class="track-import" aria-labelledby="track-import-title">
+      <h3 id="track-import-title">TRACK CONTENT / REFERENCE DATA</h3>
+      <p class="small">Load converted <code>.track.json</code> geometry or an external Amiga source-runtime package.
+        Local files stay in this browser; they are not uploaded or added to the server/image.
+        Modern physics remain the default; Classic is an explicit comparison option.</p>
+      <p id="track-import-status" class="small" role="status">Modern responsive physics are the default.
+        Reference tracks and optional Classic physics require external data; stock-Amiga parity is unverified.</p>
+      <div class="import-buttons">
+        <button id="import-track-button" class="secondary" type="button" disabled>LOAD LOCAL TRACK PACKAGE</button>
+        <button id="source-track-button" class="secondary" type="button" disabled>LOAD REFERENCE TRACK</button>
+        <button id="reset-track-button" class="secondary" type="button" disabled>RESTORE AUTHORED CIRCUIT</button>
+        <button id="import-flight-button" class="secondary" type="button" disabled>LOAD ORIGINAL FLIGHT DISK / ADF OR ZIP</button>
+        <button id="original-flight-button" class="secondary" type="button" disabled>FLY ORIGINAL AMIGA MODEL</button>
+      </div>
+      <input id="track-file" type="file" accept=".json,.track.json,application/json" hidden>
+      <input id="flight-file" type="file" accept=".adf,.zip,.json,application/zip,application/json" hidden>
+      <p id="original-flight-status" class="small" role="status">Original flight disks stay local; no original bytes are bundled or uploaded.</p>
+    </section>
+    <p class="small">The REC button downloads a WebM of the game canvas and synthesized game audio only. It never uses your microphone, webcam or screen capture. Audio starts after your first interaction. A gamepad and a keyboard are both optional on touch devices.</p>
+    <p class="small">A first playable slice, not an exact port. Original game by Geoff Crammond.
+      The included circuits, implementation, vehicle/environment art and sounds are newly authored.
+      Reference tracks are external and separately qualified.</p>
+  </dialog>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

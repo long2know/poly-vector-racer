@@ -1,0 +1,13 @@
+.git
+.squad
+.github
+.copilot
+.tools
+artifacts
+node_modules
+**/.env
+**/.env.*
+**/bin
+**/obj
+**/__pycache__
+tests

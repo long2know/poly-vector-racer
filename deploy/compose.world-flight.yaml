@@ -1,0 +1,11 @@
+services:
+  web:
+    environment:
+      STUNT_WORLD_FLIGHT: /reference/world-flight/manifest.json
+    volumes:
+      - type: bind
+        source: ${WORLD_FLIGHT_DIR:?Set WORLD_FLIGHT_DIR to the generated World Flight package directory}
+        target: /reference/world-flight
+        read_only: true
+        bind:
+          create_host_path: false

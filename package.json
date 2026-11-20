@@ -1,0 +1,20 @@
+{
+  "name": "poly-vector-racer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "start": "bash scripts/run.sh",
+    "test": "node --test tests/browser/*.test.mjs",
+    "test:hosting": "node --test tests/hosting/*.test.mjs",
+    "test:simulation": "bash scripts/dotnet.sh run --project tests/StuntRacer.Checks -c Release",
+    "test:city": "bash scripts/dotnet.sh run --project tests/StuntRacer.CityChecks -c Release",
+    "test:stunts": "bash scripts/dotnet.sh run --project tests/StuntRacer.StuntsChecks -c Release",
+    "test:flight": "bash scripts/dotnet.sh run --project tests/StuntRacer.FlightChecks -c Release",
+    "test:flight-data": "bash scripts/dotnet.sh run --project tests/StuntRacer.FlightDataChecks -c Release --",
+    "test:flight-original": "bash scripts/dotnet.sh run --project tests/StuntRacer.FlightOriginalChecks -c Release --",
+    "test:flight-reference": "bash scripts/dotnet.sh run --project tests/StuntRacer.FlightReferenceChecks -c Release --",
+    "test:compatibility": "bash scripts/dotnet.sh run --project tests/StuntRacer.CompatibilityChecks -c Release",
+    "test:browser": "npm run test:compatibility && node tests/browser/playable.mjs"
+  }
+}

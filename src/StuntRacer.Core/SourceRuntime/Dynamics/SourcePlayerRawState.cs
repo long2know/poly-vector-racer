@@ -1,0 +1,65 @@
+namespace StuntRacer.Core.SourceRuntime;
+
+/// <summary>One of three physical contacts. Heights retain reference integer precision.</summary>
+public readonly record struct SourcePlayerContact(
+    int RoadHeight,
+    int ActualHeight,
+    int Penetration,
+    int PreviousPenetration,
+    int Response,
+    bool OnRoad,
+    byte Damage);
+
+/// <summary>
+/// Immutable observation of the running reference-derived player kernel, not a stock
+/// executable memory map. Display interpolation never changes this record's source.
+/// </summary>
+public readonly record struct SourcePlayerRawState(
+    long Tick,
+    int X,
+    int Y,
+    int Z,
+    ushort Yaw,
+    ushort Pitch,
+    ushort Roll,
+    int WorldVelocityX,
+    int WorldVelocityY,
+    int WorldVelocityZ,
+    int BodyVelocityX,
+    int BodyVelocityY,
+    int BodyVelocityZ,
+    int WorldAccelerationX,
+    int WorldAccelerationY,
+    int WorldAccelerationZ,
+    int PitchVelocity,
+    int YawVelocity,
+    int RollVelocity,
+    int PitchAcceleration,
+    int YawAcceleration,
+    int RollAcceleration,
+    int EnginePower,
+    int Steering,
+    int AverageResponse,
+    int BoostReserve,
+    int BoostSubunit,
+    int Damage,
+    int OffRoadTicks,
+    int RecoveryTicks,
+    int Recoveries,
+    int GroundedDelay,
+    int DamagedCount,
+    int DamageHoles,
+    int SmashCountdown,
+    int SideFlags,
+    bool AcceleratingLatch,
+    bool Boosting,
+    bool TouchingRoad,
+    bool OnChains,
+    bool Airborne,
+    bool OffMap,
+    bool SmallerLimitRequired,
+    int SectionIndex,
+    int SegmentIndex,
+    SourcePlayerContact FrontLeft,
+    SourcePlayerContact FrontRight,
+    SourcePlayerContact Rear);
