@@ -1,18 +1,16 @@
 services:
-  web:
+  poly-vector-racer:
     environment:
-      STUNT_TRACK_CATALOG: /reference/tracks/track-catalog.json
-      STUNT_FLIGHT_PACKAGE: /reference/flight-package.json
+      STUNT_TRACK_CATALOG: /app/data/tracks/track-catalog.json
+      STUNT_FLIGHT_PACKAGE: /app/data/flight-package.json
     volumes:
       - type: bind
-        source: ${REFERENCE_TRACK_DIR:?Set REFERENCE_TRACK_DIR to the directory containing track-catalog.json}
-        target: /reference/tracks
-        read_only: true
+        source: ${REFERENCE_TRACK_DIR:-${DOCKER_DATA:?Set DOCKER_DATA or REFERENCE_TRACK_DIR}/games/poly-vector-racer/tracks}
+        target: /app/data/tracks
         bind:
           create_host_path: false
       - type: bind
-        source: ${REFERENCE_FLIGHT_PACKAGE:?Set REFERENCE_FLIGHT_PACKAGE to the local original-flight package.json}
-        target: /reference/flight-package.json
-        read_only: true
+        source: ${REFERENCE_FLIGHT_PACKAGE:-${DOCKER_DATA:?Set DOCKER_DATA or REFERENCE_FLIGHT_PACKAGE}/games/poly-vector-racer/flight-package.json}
+        target: /app/data/flight-package.json
         bind:
           create_host_path: false
