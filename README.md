@@ -165,13 +165,13 @@ webcam or screen-capture access.
 
 The production [`compose.yaml`](compose.yaml) pulls
 `ghcr.io/long2know/poly-vector-racer:latest` and publishes port 8080 in the
-container on `127.0.0.1:5188`. If the package is private, sign in with
+container on host port **8913**. If the package is private, sign in with
 `docker login ghcr.io` using a credential with package read access. For the
 shared games host:
 
 ```sh
-BASE_URL=/poly-vector-racer STUNT_PORT=5188 docker compose pull
-BASE_URL=/poly-vector-racer STUNT_PORT=5188 docker compose up -d
+docker compose pull
+docker compose up -d
 ```
 
 Add [`deploy/nginx/poly-vector-racer.conf`](deploy/nginx/poly-vector-racer.conf)
@@ -184,9 +184,11 @@ sudo nginx -t && sudo nginx -s reload
 
 The intended URL is `https://games.long2know.com/poly-vector-racer/`. Keep
 the prefix on proxied requests (`proxy_pass` has no trailing slash) and set
-nginx's upstream port to the same `STUNT_PORT` used by Compose. The nginx
-sample assumes it runs on the Docker host. If nginx itself is containerized,
-use a shared Docker network and the service hostname/port instead of loopback.
+nginx's upstream port to the same `STUNT_PORT` used by Compose. The published
+port is not restricted to loopback; restrict access separately if it should
+only be reachable through nginx. The sample uses `127.0.0.1:8913` for nginx on
+the Docker host. For nginx on another machine, use the Docker host's address;
+for nginx on a shared Docker network, use `poly-vector-racer:8080`.
 
 `BASE_URL` is a runtime mount path. The default is `/poly-vector-racer`;
 `BASE_URL=` serves at root, and `/stunt-car-racer` still works when configured
@@ -194,33 +196,35 @@ for an existing deployment. `/healthz` is always at the upstream root.
 `POLY_VECTOR_RACER_IMAGE` can select an immutable image digest or a
 `sha-<commit>` tag for repeatable deployment or rollback.
 
-For **World Flight**, build the optional
-[terrain package](tools/WorldFlight/README.md), then mount its directory
-read-only:
+No volume is needed for the base game. For **World Flight**, build the optional
+[terrain package](tools/WorldFlight/README.md) under
+`${DOCKER_DATA}/games/poly-vector-racer/world-flight`, or set `WORLD_FLIGHT_DIR`
+to its actual directory:
 
 ```sh
-BASE_URL=/poly-vector-racer WORLD_FLIGHT_DIR=/absolute/path/to/world-flight/package \
+DOCKER_DATA=/absolute/path/to/docker-data \
   docker compose -f compose.yaml -f deploy/compose.world-flight.yaml up -d
 ```
 
 For the optional original/reference modes, [`deploy/compose.reference.yaml`](deploy/compose.reference.yaml)
-accepts an external `REFERENCE_TRACK_DIR` (containing `track-catalog.json`) and
-`REFERENCE_FLIGHT_PACKAGE` (the extracted flight `package.json`). It mounts
-both read-only. Add it as another `-f` argument if you are authorized to serve
-those files. Public hosts should leave them unconfigured unless distribution
-is permitted; original flight also supports local browser import.
+uses `tracks/track-catalog.json` and `flight-package.json` under
+`${DOCKER_DATA}/games/poly-vector-racer` by default. Override those locations with
+`REFERENCE_TRACK_DIR` and `REFERENCE_FLIGHT_PACKAGE` if needed. The overrides
+mount data under `/app/data`; UID/GID `1000:1000` must be able to read the files.
+Only mount and serve original/reference files when distribution is
+permitted. Original flight also supports local browser import.
 
 For a **local source build** instead of the registry image:
 
 ```sh
-STUNT_PORT=5189 docker compose -f compose.yaml -f compose.build.yaml up --build -d
+STUNT_PORT=8914 docker compose -f compose.yaml -f compose.build.yaml up --build -d
 ```
 
-The final image runs as the .NET image's non-root application user. Compose
-uses a read-only root filesystem, a temporary `/tmp`, dropped capabilities and
-no-new-privileges. The image does not include original disks, reference
-packages, or the generated geographic data. The Container workflow publishes
-from `main`; the example does not provision DNS, TLS or a live server.
+Compose runs the process directly as `1000:1000`; `PUID`/`PGID` variables do not
+configure this image. There is no `tmpfs` mount. The image does not include
+original disks, reference packages, or the generated geographic data. The
+Container workflow publishes from `main`; the example does not provision DNS,
+TLS or a live server.
 
 After building, `STUNT_CONTAINER_IMAGE=poly-vector-racer:local npm run test:hosting`
 also checks that the non-root image can read every published file and serve its

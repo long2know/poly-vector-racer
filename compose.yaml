@@ -1,18 +1,12 @@
 name: poly-vector-racer
 
 services:
-  web:
+  poly-vector-racer:
     image: ${POLY_VECTOR_RACER_IMAGE:-ghcr.io/long2know/poly-vector-racer:latest}
-    init: true
+    platform: linux/amd64
+    restart: unless-stopped
+    user: "1000:1000"
     environment:
       BASE_URL: ${BASE_URL-/poly-vector-racer}
     ports:
-      - "127.0.0.1:${STUNT_PORT:-5188}:8080"
-    read_only: true
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
+      - "${STUNT_PORT:-8913}:8080"
