@@ -120,7 +120,7 @@ az boards work-item show --id {id} --output json
 **Trigger:** Agent accepts issue assignment and begins work.
 
 **Actions:**
-1. Ensure working on latest base branch (usually `main` or `dev`)
+1. Use the latest `main` as the base for work in this repository
 2. Create feature branch using Squad naming convention
 3. Transition issue to `inProgress` state
 
@@ -128,12 +128,13 @@ az boards work-item show --id {id} --output json
 
 **Standard (single-agent, no parallelism):**
 ```bash
-git checkout main && git pull && git checkout -b squad/{issue-number}-{slug}
+git checkout main && git pull --ff-only origin main && git checkout -b squad/{issue-number}-{slug}
 ```
 
 **Worktree (parallel multi-agent):**
 ```bash
-git worktree add ../worktrees/{issue-number} -b squad/{issue-number}-{slug}
+git fetch origin main
+git worktree add ../worktrees/{issue-number} -b squad/{issue-number}-{slug} origin/main
 cd ../worktrees/{issue-number}
 ```
 
@@ -171,7 +172,7 @@ git push -u origin squad/{issue-number}-{slug}
 **Trigger:** Agent completes implementation and is ready for review.
 
 **Actions:**
-1. Open PR from feature branch to base branch
+1. Open PR from the feature branch to `main` in this repository
 2. Reference issue in PR description
 3. Apply labels if needed
 4. Transition issue to `needsReview` state
@@ -286,7 +287,8 @@ git worktree remove ../worktrees/{issue-number}
 
 ## Spawn Prompt Additions for Issue Work
 
-When spawning an agent to work on an issue, include this context block:
+When spawning an agent to work on an issue, include this context block. For this
+repository, set `{base-branch}` to `main`:
 
 ```markdown
 ## ISSUE CONTEXT
