@@ -118,9 +118,12 @@ the GPS stays available. Stops are street approaches to Seattle Great Wheel,
 Space Needle, Amazon Spheres, Lumen Field and T-Mobile Park.
 
 Driving is limited to connected downtown surface streets. No bridges, freeways,
-live traffic or routing services are used. The offline map has no lane,
-one-way or turn-restriction rules; use it only in the game. A ZIP without
-Seattle roads leaves this experience unavailable but does not disable flight.
+live traffic or routing services are used. Fictional pedestrians walk on
+selected dry sidewalks in Seattle Scenic Drive and make room for the game
+car; they don't affect driving or GPS. Pausing also pauses the walkers.
+The offline map has no lane, one-way or turn-restriction rules; use it only
+in the game. A ZIP without Seattle roads leaves this experience unavailable
+but does not disable flight.
 
 **Flight Training / Coppercloud Range** is a separate fictional island
 activity; it needs no terrain package or original disk. Select it from
@@ -572,7 +575,7 @@ selector, landmark projection and road styling with the hosted terrain ZIP.
 `STUNT_BROWSER_FOCUS=world-flight-speed` runs the focused SR-71 Mach 3 check
 at the Cascades departure without preceding mobile or sightseeing scenes.
 `STUNT_BROWSER_FOCUS=seattle-drive` checks the real ZIP's street map, scenery,
-GPS arrival, pause, replanning and keyboard takeover in Chrome. The related
+sidewalk activity, GPS arrival, pause, replanning and keyboard takeover in Chrome. The related
 `seattle-drive-legacy` and `seattle-drive-no-package` focuses check unavailable
 states. To run the deterministic native arrival and takeover checks:
 

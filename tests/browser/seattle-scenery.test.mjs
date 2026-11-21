@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decodeTile, readWorldCatalog, WorldTerrain } from '../../src/StuntRacer.Browser/wwwroot/world-terrain.js';
-import { WorldFlightScene } from '../../src/StuntRacer.Browser/wwwroot/world-flight-scene.js';
+import { WorldFlightScene, WorldScenery } from '../../src/StuntRacer.Browser/wwwroot/world-flight-scene.js';
 
 const roads = {
   license: 'ODbL-1.0', attribution: '© OpenStreetMap contributors', licenseUrl: 'https://www.openstreetmap.org/copyright',
@@ -54,6 +54,19 @@ function vertices(mesh) {
   return Array.from({ length: mesh.vertices.length / 10 }, (_, i) => mesh.vertices.slice(i * 10, (i + 1) * 10));
 }
 
+function surfaceAt(rows, x, z, material) {
+  const cross = (a, b, x, z) => (b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0]);
+  for (let i = 0; i < rows.length; i += 3) {
+    const [a, b, c] = rows.slice(i, i + 3);
+    if (a[9] !== material) continue;
+    const area = cross(a, b, c[0], c[2]);
+    const weights = [cross(b, c, x, z), cross(c, a, x, z), cross(a, b, x, z)].map(n => n / area);
+    if (weights.every(n => n >= -1e-8))
+      return { y: weights[0] * a[1] + weights[1] * b[1] + weights[2] * c[1], colour: a.slice(6, 9) };
+  }
+  return null;
+}
+
 test('Seattle ribbons are grouped on visible terrain facets, skip ordinary water and survive LOD replacement', async t => {
   const urls = [];
   t.mock.method(globalThis, 'fetch', async url => {
@@ -98,6 +111,77 @@ test('Seattle ribbons are grouped on visible terrain facets, skip ordinary water
   assert.equal(terrain.draw(24_000, 24_000, 140000, false, 4).length, 1);
   assert.equal(graphics.meshes.size, 0, 'leaving Seattle drops the road meshes');
   terrain.dispose();
+});
+
+test('Seattle street meshes pave exact junctions and fit dry paint, curbs and walkable tops to the rendered facets', async t => {
+  const streets = [
+    [1, 'local', 'surface', [[12, 144], [72, 144], [110, 144], [118, 144], [124, 144], [184, 144], [244, 144], [308, 144]]],
+    [2, 'arterial', 'surface', [[118, 35], [118, 138], [118, 144], [118, 150], [118, 224]]],
+    [3, 'freeway', 'bridge', [[220, 75, 46], [220, 195, 47]]],
+    [4, 'local', 'surface', [[36, 220], [76, 220], [110, 237]]],
+    [5, 'local', 'surface', [[12, 282], [125, 282]]],
+    [6, 'local', 'surface', [[12, 308], [125, 308]]],
+  ];
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ ...roads, roads: streets }));
+  const { terrain, graphics } = worldTerrain({ id: 'seattle', featureCount: streets.length,
+    pointCount: streets.reduce((sum, row) => sum + row[3].length, 0), bounds: [12, 35, 308, 308] });
+  const scenery = new WorldScenery(graphics, terrain), tile = fixture(8, 0, 0, (i, j) => i + j * 2 + (i === 2 ? 3 : 0),
+    (_i, j) => j >= 9 ? 2 : 0);
+  tile.mesh = {};
+  setVisible(terrain, tile);
+  const decorate = options => scenery.decorate({
+    draws: [], camera: { eye: [42, 23, 140], target: [62, 18, 146] },
+  }, 42, 144, options);
+  const roadMesh = frame => frame.draws.find(({ mesh }) => mesh !== tile.mesh)?.mesh;
+  const document = await terrain.loadRoads(), aerial = roadMesh(decorate());
+  assert.deepEqual(document.roads, streets, 'render styling cannot replace or mutate the drive document');
+  scenery.setMapRoads(true);
+  let actorHook;
+  const options = { view: 'ground', appendGroundActors: frame => {
+    actorHook = terrain.visibleSidewalksAt(tile);
+    assert.deepEqual(frame.camera.eye, [42, 23, 140]);
+  } };
+  let ground;
+  for (let i = 0; i < 30 && !actorHook; i++) ground = decorate(options);
+  const street = roadMesh(ground), rows = vertices(street);
+  assert.notEqual(street, aerial, 'the ground view replaces the colored flight ribbon, not just its height');
+  assert.equal(ground.camera.mapRoads, false);
+  assert.equal(scenery.diagnostics().roadStyle, 'street');
+  assert.equal(scenery.diagnostics().roadMeshes, 1, 'all street material layers share the one tile draw');
+  assert.ok(actorHook && actorHook === terrain.visibleSidewalksAt(tile));
+  assert.ok(!graphics.meshes.has(aerial), 'the old view does not retain a second mesh');
+  assert.deepEqual(rows.filter(p => p[9] === 9), vertices(aerial).filter(p => p[9] === 9), 'the bridge deck mesh is unchanged');
+  assert.ok(rows.every(p => p[9] === 9 || p[9] >= 12));
+  const on = (x, z, material) => surfaceAt(rows, x, z, material);
+  const gap = (x, z, material) => on(x, z, material)?.y - terrain.visualSample(x, z);
+  assert.ok(on(42.5, 149.9, 12).colour.every(c => c < .15), 'wider dark asphalt reaches the edge of the drive corridor');
+  assert.ok(Math.abs(gap(42.5, 149.9, 12) - .075) < 1e-8);
+  assert.ok(Math.abs(gap(42.5, 144, 13) - .10) < 1e-8, 'a visible painted dash rides just above the asphalt');
+  assert.equal(on(48, 144, 13), null, 'the local centerline has gaps between its short yellow dashes');
+  assert.ok(on(126.6, 75, 13).colour[2] > .7 && on(118.18, 75, 13).colour[2] < .2,
+    'arterial edges are white, while the paired center stripes are yellow');
+  assert.ok(Math.abs(gap(42.5, 150.39, 15) - .1575) < 1e-8, 'the raised curb bevel links road and sidewalk');
+  assert.ok(Math.abs(gap(42.5, 151.065, 14) - .24) < 1e-8);
+  assert.ok(terrain.hasVisibleSidewalk(42.5, 151.065) && terrain.hasVisibleSidewalk(127.865, 75));
+  assert.ok(!terrain.hasVisibleSidewalk(42.5, 149.9), 'drive-corridor pavement is not a sidewalk');
+  assert.ok(terrain.hasVisibleSidewalk(74.29, 227.065) && terrain.hasVisibleSidewalk(74.39, 227.065),
+    'the sidewalks join across a safe bend rather than ending at each source point');
+
+  for (const [x, z] of [[118, 144], [116, 150], [124, 144], [128.5, 144]]) {
+    assert.ok(on(x, z, 12), 'the entire junction and its mouths stay paved');
+    assert.ok(!on(x, z, 13) && !on(x, z, 14) && !on(x, z, 15), 'corner paving does not carry sidewalk or paint through an intersection');
+  }
+  assert.ok(!terrain.hasVisibleSidewalk(128.5, 151.065), 'the trim continues across a short source segment');
+  assert.ok(terrain.hasVisibleSidewalk(132, 151.065), 'the sidewalk resumes beyond the intersecting street');
+  assert.ok(on(222.5, 144, 12) && !on(222.5, 144, 13) && !terrain.hasVisibleSidewalk(220, 151.065),
+    'crossing mapped elevated geometry keeps the surface road but not the finish');
+  assert.ok(on(62.5, 282, 12) && !on(62.5, 282, 13), 'even a mixed shoreline facet omits paint');
+  assert.ok(!on(62.5, 308, 12) && !terrain.hasVisibleSidewalk(62.5, 315.065), 'wet faces do not get paving or sidewalks');
+  assert.equal(terrain.sample(42.5, 151.065), terrain.visualSample(42.5, 151.065), 'the .24 m step is visual only');
+
+  scenery.dispose();
+  assert.equal(terrain.visibleSidewalksAt(tile), null);
+  assert.ok(!terrain.hasVisibleSidewalk(42.5, 151.065) && graphics.meshes.size === 0);
 });
 
 test('old catalogs still run without roads; a missing or malformed declared layer is explicit', async t => {

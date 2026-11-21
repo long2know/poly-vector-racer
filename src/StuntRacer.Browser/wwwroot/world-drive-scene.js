@@ -1,6 +1,9 @@
 import { RaceScene } from './scene.js';
+import { SeattleWalkers } from './world-drive-walkers.js';
 import { WorldScenery } from './world-flight-scene.js';
 import { WorldTerrain } from './world-terrain.js';
+
+const driveRoads = new WeakMap();
 
 export function seattleRegion(catalog) {
   return catalog?.regions.find(region => region.id === 'conus' && region.roads?.id === 'seattle') ?? null;
@@ -19,7 +22,9 @@ export async function loadSeattleDrive(api, catalog) {
     ]);
     if (!roads) throw new Error('Seattle road data is not available.');
     const seed = tiles.map(tile => btoa(String.fromCharCode(...new Uint8Array(tile.buffer)))).join(';');
-    return { ...JSON.parse(api.SelectSeattleDrive(JSON.stringify(roads), seed)), terrain };
+    const definition = JSON.parse(api.SelectSeattleDrive(JSON.stringify(roads), seed));
+    driveRoads.set(terrain, roads.roads);
+    return { ...definition, terrain };
   } catch (error) {
     controller.abort();
     terrain.dispose();
@@ -34,6 +39,7 @@ export class WorldDriveScene extends RaceScene {
     this.world = world;
     this.terrain = terrain;
     this.scenery = new WorldScenery(graphics, terrain);
+    this.walkers = new SeattleWalkers(graphics, world, terrain, driveRoads.get(terrain) ?? []);
   }
 
   update(state, dt, mode, compatibility) {
@@ -49,7 +55,9 @@ export class WorldDriveScene extends RaceScene {
       if (height !== null) eye[1] = Math.max(eye[1], height + 1.1);
     }
     const { x, z } = state.player;
-    return this.scenery.decorate(frame, x, z, { far: 25000, view: 'ground' });
+    return this.scenery.decorate(frame, x, z, {
+      far: 25000, view: 'ground', appendGroundActors: frame => this.walkers.append(frame, state, this.scenery),
+    });
   }
 
   hasDetailedGround({ x, z }) {
@@ -71,7 +79,10 @@ export class WorldDriveScene extends RaceScene {
     return points.map(({ x, z }, i) => `${i === 0 ? 'M' : 'L'}${this.mapPoint(x, z).map(n => n.toFixed(2)).join(' ')}`).join('');
   }
 
-  diagnostics() { return this.scenery.diagnostics(); }
+  diagnostics() { return { ...this.scenery.diagnostics(), pedestrians: this.walkers.diagnostics() }; }
 
-  dispose() { this.scenery.dispose(); }
+  dispose() {
+    this.walkers.dispose();
+    this.scenery.dispose();
+  }
 }

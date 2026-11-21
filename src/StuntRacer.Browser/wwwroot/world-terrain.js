@@ -1,5 +1,6 @@
 import { Builder } from './scene.js';
 import { ForestLayer } from './world-forest.js';
+import { emitGroundDetails, emitGroundPavement, indexGroundRoads, roadBounds, VisibleSidewalks } from './world-ground-roads.js';
 
 const side = 33, stride = side - 1, numSamples = side * side;
 const spacing = Array.from({ length: 9 }, (_, i) => 8192 >> i);
@@ -10,12 +11,12 @@ const keyOf = (level, x, z) => `${level}/${x}/${z}`;
 const spanAt = level => spacing[level] * stride;
 const screenBand = [Infinity, 290000, 137000, 72000, 43000, 24000, 13000, 6800, 3800];
 const roadSize = 4 * 1024 * 1024, roadLimits = { features: 12000, points: 100000, tile: 5500, meshes: 96 };
+const groundRoadLimits = { distance: 1500, meshes: 12, vertices: 140000 };
 const roadStyles = Object.freeze({
-  freeway: { halfWidth: 10.4, lift: 1.24, groundLift: .10, material: 6, colour: [.72, .61, .43] },
-  arterial: { halfWidth: 6.7, lift: .98, groundLift: .075, material: 7, colour: [.53, .49, .40] },
-  local: { halfWidth: 4.15, lift: .73, groundLift: .05, material: 8, colour: [.38, .41, .40] },
+  freeway: { halfWidth: 10.4, lift: 1.24, material: 6, colour: [.72, .61, .43] },
+  arterial: { halfWidth: 6.7, lift: .98, material: 7, colour: [.53, .49, .40] },
+  local: { halfWidth: 4.15, lift: .73, material: 8, colour: [.38, .41, .40] },
 });
-export const groundRoadLowering = Object.freeze(Object.values(roadStyles).map(style => style.lift - style.groundLift));
 
 function validRoadArea(area) {
   const b = area?.bounds;
@@ -114,7 +115,7 @@ function roadIndex(data, area) {
       data?.licenseUrl !== 'https://www.openstreetmap.org/copyright' ||
       !Array.isArray(rows) || rows.length !== area.featureCount)
     throw new Error('Road features or attribution do not match the terrain catalog.');
-  const index = new Map(), b = area.bounds;
+  const index = new Map(), bridges = new Map(), b = area.bounds;
   let count = 0;
   for (const row of rows) {
     if (!Array.isArray(row) || row.length !== 4) throw new Error('Invalid road feature.');
@@ -143,8 +144,7 @@ function roadIndex(data, area) {
     });
     for (let i = 1; i < edges.length; i++) {
       const polygon = [edges[i - 1][0], edges[i][0], edges[i][1], edges[i - 1][1]];
-      const extent = [Math.min(...polygon.map(p => p[0])), Math.min(...polygon.map(p => p[1])),
-        Math.max(...polygon.map(p => p[0])), Math.max(...polygon.map(p => p[1]))];
+      const extent = roadBounds(polygon);
       const segment = { polygon, extent, bridge, style };
       for (const level of [7, 8]) {
         const span = spanAt(level), [x0, z0, x1, z1] = extent.map(p => Math.floor(p / span));
@@ -154,12 +154,16 @@ function roadIndex(data, area) {
           const bucket = index.get(key);
           if (bucket.length >= roadLimits.tile) throw new Error('Too many road segments in a terrain tile.');
           bucket.push(segment);
+          if (bridge) {
+            if (!bridges.has(key)) bridges.set(key, []);
+            bridges.get(key).push(segment);
+          }
         }
       }
     }
   }
   if (count !== area.pointCount) throw new Error('Road point count does not match the terrain catalog.');
-  return index;
+  return { index, bridges };
 }
 
 function clipRoad(polygon, distance) {
@@ -176,11 +180,10 @@ function clipRoad(polygon, distance) {
   return result;
 }
 
-function appendRoadMesh(mesh, tile, segments, start, end) {
+function roadAppender(mesh, tile) {
   const step = spacing[tile.level], span = spanAt(tile.level);
   const tx = tile.x * span, tz = tile.z * span, wet = index => tile.water[index] ? 1 : 0;
-  for (let i = start; i < end; i++) {
-    const { polygon, extent, bridge, style } = segments[i];
+  return (polygon, style, bridge = false, extent = roadBounds(polygon)) => {
     const points = polygon.map(([x, z, y]) => [x - tx, z - tz, y]);
     const lowX = Math.max(0, Math.floor((extent[0] - tx) / step));
     const lowZ = Math.max(0, Math.floor((extent[1] - tz) / step));
@@ -188,8 +191,8 @@ function appendRoadMesh(mesh, tile, segments, start, end) {
     const highZ = Math.min(stride - 1, Math.floor((extent[3] - tz) / step));
     for (let z = lowZ; z <= highZ; z++) for (let x = lowX; x <= highX; x++) {
       const index = z * side + x, diagonal = wet(index) + wet(index + side + 1);
-      const first = bridge || diagonal + wet(index + side) < 2;
-      const second = bridge || diagonal + wet(index + 1) < 2;
+      const first = bridge || diagonal + wet(index + side) < (style.wetLimit ?? 2);
+      const second = bridge || diagonal + wet(index + 1) < (style.wetLimit ?? 2);
       if (!first && !second) continue;
       const west = step * x, south = step * z;
       const cell = clipRoad(clipRoad(clipRoad(clipRoad(points,
@@ -199,9 +202,9 @@ function appendRoadMesh(mesh, tile, segments, start, end) {
       for (const [keep, sign] of [[first, 1], [second, -1]]) {
         if (!keep) continue;
         const clipped = clipRoad(cell, p => sign * (p[1] - south - (p[0] - west)));
-        const raised = clipped.map(([x, z, deck]) => {
-          const ground = hit(tile, tx + x, tz + z) + style.lift;
-          return [x, bridge ? Math.max(ground, deck + .3) : ground, z];
+        const raised = clipped.map(([x, z, height]) => {
+          const ground = hit(tile, tx + x, tz + z) + (style.lift ?? height);
+          return [x, bridge ? Math.max(ground, height + .3) : ground, z];
         });
         for (let i = 1; i + 1 < raised.length; i++) {
           const a = raised[0], b = raised[i], c = raised[i + 1];
@@ -212,6 +215,15 @@ function appendRoadMesh(mesh, tile, segments, start, end) {
       }
     }
   }
+}
+
+function roadTileKey(tile) { return keyOf(tile.level, tile.x, tile.z); }
+
+function dryRoadFacet(tile, x, z) {
+  const step = spacing[tile.level], span = spanAt(tile.level);
+  const u = (x - span * tile.x) / step, v = (z - span * tile.z) / step;
+  const i = Math.floor(u), j = Math.floor(v), a = j * side + i;
+  return !tile.water[a] && !tile.water[a + side + 1] && !tile.water[a + (u - i <= v - j ? side : 1)];
 }
 
 class SeattleRoadLayer {
@@ -231,7 +243,9 @@ class SeattleRoadLayer {
     const controller = new AbortController(), { signal } = controller;
     const promise = fetchWorldJson(this.url, roadSize, signal).then(data => {
       signal.throwIfAborted();
-      this.index = roadIndex(data, this.area);
+      const { index, bridges } = roadIndex(data, this.area);
+      this.index = index;
+      this.bridges = bridges;
       this.error = null;
       return this.data = data;
     }).catch(error => {
@@ -245,7 +259,7 @@ class SeattleRoadLayer {
     return promise;
   }
 
-  draw(graphics, visible, x, z, now) {
+  draw(graphics, visible, x, z, now, ground) {
     const [west, south, east, north] = this.area.bounds;
     if (Math.hypot(Math.max(0, west - x, x - east), Math.max(0, south - z, z - north)) > 12000) {
       if (this.load || this.index || this.error) this.clear(graphics);
@@ -255,44 +269,67 @@ class SeattleRoadLayer {
       if (!this.load && now >= this.retryAt) this.loadDocument(now).catch(() => {});
       return [];
     }
+    if (this.ground !== ground) {
+      this.clearMeshes(graphics);
+      this.ground = ground;
+      if (!ground) this.groundWork = this.groundIndex = null;
+    }
+    if (ground && !this.groundIndex) {
+      this.groundWork ??= indexGroundRoads(this.data.roads, spanAt);
+      const deadline = performance.now() + 2.5;
+      for (let i = 0; i < 32; i++) {
+        const stage = this.groundWork.next();
+        if (stage.done) {
+          this.groundIndex = stage.value;
+          this.groundWork = null;
+          break;
+        }
+        if (performance.now() >= deadline) break;
+      }
+      if (!this.groundIndex) return [];
+    }
     if (this.visible !== visible) {
-      const distance = tile => {
+      const centerDistance = tile => {
         const span = spanAt(tile.level);
         return Math.hypot((tile.x + .5) * span - x, (tile.z + .5) * span - z);
       };
+      const edgeDistance = tile => {
+        const span = spanAt(tile.level);
+        return Math.hypot(Math.max(0, tile.x * span - x, x - (tile.x + 1) * span),
+          Math.max(0, tile.z * span - z, z - (tile.z + 1) * span));
+      };
+      const ordered = visible.filter(tile => tile.level === 7 || tile.level === 8)
+        .sort((a, b) => centerDistance(a) - centerDistance(b));
       this.visible = visible;
-      this.wanted = visible.filter(tile => this.index.has(keyOf(tile.level, tile.x, tile.z)))
-        .sort((a, b) => distance(a) - distance(b)).slice(0, roadLimits.meshes);
-      const wantedSet = new Set(this.wanted);
-      for (const [tile, mesh] of this.meshes) if (!wantedSet.has(tile)) {
-        if (mesh) graphics.releaseMesh(mesh);
+      this.wanted = new Map();
+      if (ground) {
+        for (const tile of ordered) {
+          if (this.wanted.size === groundRoadLimits.meshes) break;
+          if (edgeDistance(tile) <= groundRoadLimits.distance && this.groundBucket(tile)?.length)
+            this.wanted.set(tile, 'ground');
+        }
+      }
+      const remaining = ground ? this.bridges : this.index;
+      for (const tile of ordered) {
+        if (this.wanted.size === roadLimits.meshes) break;
+        if (!this.wanted.has(tile) && remaining.has(roadTileKey(tile))) this.wanted.set(tile, ground ? 'bridges' : 'flight');
+      }
+      for (const [tile, record] of this.meshes) if (this.wanted.get(tile) !== record.kind) {
+        if (record.mesh) graphics.releaseMesh(record.mesh);
         this.meshes.delete(tile);
       }
-      if (this.job && !wantedSet.has(this.job.tile)) this.job = null;
+      if (this.job && this.wanted.get(this.job.tile) !== this.job.kind) this.job = null;
     }
     if (!this.job) {
-      const tile = this.wanted.find(tile => tile.mesh && !this.meshes.has(tile));
-      if (tile) this.job = { tile, mesh: new Builder(), next: 0 };
-    }
-    if (this.job) {
-      const job = this.job, tile = job.tile;
-      const segments = this.index.get(keyOf(tile.level, tile.x, tile.z));
-      const deadline = performance.now() + 3;
-      // A dense downtown tile can contain thousands of source segments.
-      for (let i = 0; i < 8 && job.next < segments.length; i++) {
-        const end = Math.min(job.next + 48, segments.length);
-        appendRoadMesh(job.mesh, tile, segments, job.next, end);
-        job.next = end;
-        if (performance.now() >= deadline) break;
-      }
-      if (job.next === segments.length) {
-        this.meshes.set(tile, job.mesh.vertices.length ? graphics.mesh(job.mesh, true) : null);
-        this.job = null;
+      for (const [tile, kind] of this.wanted) if (tile.mesh && !this.meshes.has(tile)) {
+        this.job = this.startTile(tile, kind);
+        break;
       }
     }
+    if (this.job) this.buildTile(graphics);
     this.meshCount = 0;
     const draws = [];
-    for (const [tile, mesh] of this.meshes) if (mesh) {
+    for (const [tile, { mesh }] of this.meshes) if (mesh) {
       const span = spanAt(tile.level);
       draws.push({ mesh, offset: [tile.x * span, 0, tile.z * span], shadow: false });
       this.meshCount++;
@@ -300,12 +337,76 @@ class SeattleRoadLayer {
     return draws;
   }
 
+  groundBucket(tile) {
+    return this.groundIndex.buckets[tile.level - 7].get(`${tile.x}/${tile.z}`);
+  }
+
+  startTile(tile, kind) {
+    const mesh = new Builder(), append = roadAppender(mesh, tile), key = roadTileKey(tile);
+    const flight = segments => ({ entries: segments, draw: ({ polygon, style, bridge, extent }) =>
+      append(polygon, style, bridge, extent) });
+    const stages = [flight((kind === 'flight' ? this.index : this.bridges).get(key) ?? [])];
+    let sidewalks = null;
+    if (kind === 'ground') {
+      const entries = this.groundBucket(tile);
+      stages.push({ entries, draw: entry => emitGroundPavement(entry, append) });
+      if (tile.level === 8) {
+        sidewalks = new VisibleSidewalks();
+        stages.push({ entries, draw: entry => {
+          const walkable = [];
+          emitGroundDetails(entry, this.groundIndex.barriers, (polygon, style) => {
+            const before = mesh.vertices.length;
+            append(polygon, style);
+            if (style.material === 14 && mesh.vertices.length > before) walkable.push(polygon);
+          });
+          if (mesh.vertices.length <= groundRoadLimits.vertices * 10)
+            for (const polygon of walkable) sidewalks.add(polygon);
+        } });
+      }
+    }
+    return { tile, kind, mesh, stages, sidewalks, next: 0 };
+  }
+
+  buildTile(graphics) {
+    const job = this.job, ground = job.kind === 'ground', deadline = performance.now() + 3;
+    const chunk = ground ? 8 : 48;
+    // One staged tile per frame; preserve decks and the paving before spending the cap on details.
+    for (let i = 0; i < (ground ? 16 : 8) && job.stages.length; i++) {
+      const { entries, draw } = job.stages[0], end = Math.min(job.next + chunk, entries.length);
+      for (; job.next < end; job.next++) {
+        const before = job.mesh.vertices.length;
+        draw(entries[job.next]);
+        if (ground && job.mesh.vertices.length > groundRoadLimits.vertices * 10) {
+          job.mesh.vertices.length = before;
+          job.stages.length = 0;
+          break;
+        }
+      }
+      if (job.next === entries.length) {
+        job.stages.shift();
+        job.next = 0;
+      }
+      if (performance.now() >= deadline) break;
+    }
+    if (!job.stages.length) {
+      const mesh = job.mesh.vertices.length ? graphics.mesh(job.mesh, true) : null;
+      this.meshes.set(job.tile, { kind: job.kind, mesh, sidewalks: job.sidewalks });
+      this.job = null;
+    }
+  }
+
+  clearMeshes(graphics) {
+    for (const { mesh } of this.meshes.values()) if (mesh) graphics.releaseMesh(mesh);
+    this.meshes.clear();
+    this.visible = this.wanted = this.job = null;
+    this.meshCount = 0;
+  }
+
   clear(graphics) {
     this.load?.controller.abort();
-    this.load = this.data = this.index = this.error = this.visible = this.wanted = this.job = null;
-    for (const mesh of this.meshes.values()) if (mesh) graphics.releaseMesh(mesh);
-    this.meshes.clear();
-    this.meshCount = this.retryAt = 0;
+    this.load = this.data = this.index = this.bridges = this.error = this.groundWork = this.groundIndex = null;
+    this.clearMeshes(graphics);
+    this.retryAt = 0;
   }
 }
 
@@ -425,6 +526,15 @@ export class WorldTerrain {
   visualSample(x, z, minimumLevel = 0) {
     const tile = this.visualTileAt(x, z, minimumLevel);
     return tile ? hit(tile, x, z) : null;
+  }
+
+  visibleSidewalksAt(tile) {
+    return this.roads?.meshes.get(tile)?.sidewalks ?? null;
+  }
+
+  hasVisibleSidewalk(x, z) {
+    const tile = this.visualTileAt(x, z, 8), sidewalks = this.visibleSidewalksAt(tile);
+    return Boolean(sidewalks?.has(x, z) && dryRoadFacet(tile, x, z));
   }
 
   isWater(x, z) {
@@ -566,7 +676,7 @@ export class WorldTerrain {
     }
   }
 
-  draw(x, z, far, balanced, now) {
+  draw(x, z, far, balanced, now, ground = false) {
     this.select(x, z, far, balanced, now);
     for (const tile of this.meshQueue.splice(0, 3))
       tile.mesh = this.graphics.mesh(makeElevationMesh(tile), true);
@@ -576,7 +686,7 @@ export class WorldTerrain {
       return [draw, ...[...(tile.seams?.values() ?? [])].filter(seam => seam.mesh)
         .map(seam => ({ ...draw, mesh: seam.mesh }))];
     });
-    if (this.roads) terrain.push(...this.roads.draw(this.graphics, this.visible, x, z, now));
+    if (this.roads) terrain.push(...this.roads.draw(this.graphics, this.visible, x, z, now, ground));
     terrain.push(...this.forest.draw(this, x, z, balanced, forestGround));
     return terrain;
   }

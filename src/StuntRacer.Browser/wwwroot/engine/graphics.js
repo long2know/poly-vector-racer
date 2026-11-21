@@ -12,14 +12,9 @@ out vec4 shadowPosition;
 flat out float surfaceMaterial;
 #ifdef FLIGHT_DEPTH
 out float viewDepth;
-uniform vec3 roadLowering;
 #endif
 void main() {
   vec4 world = model * vec4(position,1.0);
-#ifdef FLIGHT_DEPTH
-  // Surface roads are 6–8; bridge materials 9–11 retain their deck heights.
-  if(material>5.5&&material<8.5) world.y-=roadLowering[int(material)-6];
-#endif
   worldPosition=world.xyz; worldNormal=mat3(model)*normal;
   surfaceColor=color; surfaceMaterial=material;
   shadowPosition=lightProjection*world;
@@ -50,6 +45,23 @@ float hash(vec2 p) {
   h=(h^(h>>13u))*3266489917u;
   return float((h^(h>>16u))&0x00ffffffu)/16777215.0;
 }
+#ifdef FLIGHT_DEPTH
+// Periodic cells keep the asphalt fixed when the world origin rebases by 2048 m.
+float pavementHash(vec2 p) {
+  // The shifts and multipliers require 32-bit integers; fragment int defaults to mediump.
+  highp uvec2 q=uvec2(mod(p,256.0));
+  highp uint h=q.x*1664525u+q.y*1013904223u;
+  h=(h^(h>>16u))*2246822519u;
+  h=(h^(h>>13u))*3266489917u;
+  return float((h^(h>>16u))&0x00ffffffu)/16777215.0;
+}
+float pavementNoise(vec2 p) {
+  vec2 i=floor(p), f=fract(p);
+  f=f*f*(3.0-2.0*f);
+  return mix(mix(pavementHash(i),pavementHash(i+vec2(1,0)),f.x),
+    mix(pavementHash(i+vec2(0,1)),pavementHash(i+vec2(1,1)),f.x),f.y);
+}
+#endif
 float shadow(vec3 n) {
   vec3 p=shadowPosition.xyz/shadowPosition.w*.5+.5;
   if(p.x<0.0||p.y<0.0||p.x>1.0||p.y>1.0||p.z>1.0) return 1.0;
@@ -65,7 +77,7 @@ void main() {
 #endif
   vec3 n=normalize(worldNormal), base=surfaceColor;
   bool water=surfaceMaterial>4.5&&surfaceMaterial<5.5;
-  bool road=surfaceMaterial>5.5;
+  bool road=surfaceMaterial>5.5&&surfaceMaterial<11.5;
   if(water) {
     float a=worldPosition.x*.021+worldTime*.7, b=worldPosition.z*.017-worldTime*.5;
     n=normalize(n+vec3(cos(a)*.045,0.0,sin(b)*.045));
@@ -85,13 +97,28 @@ void main() {
     float patches=sin(worldPosition.x*.019)*sin(worldPosition.z*.024);
     base*=.93+.12*patches+.04*hash(floor(worldPosition.xz*.7));
   }
+  float sheen=.09;
+#ifdef FLIGHT_DEPTH
+  if(surfaceMaterial>11.5&&surfaceMaterial<12.5) {
+    vec2 p=worldPosition.xz;
+    float footprint=length(fwidth(p));
+    float patches=pavementNoise(p*.125)-.5;
+    float wear=pavementNoise(p*2.0)-.5;
+    float gravel=pavementHash(floor(p*16.0))-.5;
+    base*=1.0+.32*patches+.24*wear*(1.0-smoothstep(.15,.55,footprint))
+      +.30*gravel*(1.0-smoothstep(.04,.18,footprint));
+    sheen=.017;
+  }
+  if(surfaceMaterial>13.5&&surfaceMaterial<15.5)
+    base*=.93+.13*pavementNoise(worldPosition.xz*.5);
+#endif
   vec3 view=normalize(eye-worldPosition);
   float diffuse=max(dot(n,sun),0.0), visibility=shadow(n);
   vec3 ambient=mix(vec3(.21,.24,.25),vec3(.48,.57,.62),n.y*.5+.5);
   vec3 lit=base*(ambient+vec3(1.0,.88,.71)*diffuse*visibility*1.02);
   float metallic=water?.65:step(1.5,surfaceMaterial)*(1.0-step(2.5,surfaceMaterial));
   float spec=pow(max(dot(n,normalize(sun+view)),0.0),mix(22.0,88.0,metallic));
-  lit+=vec3(1.0,.89,.76)*spec*mix(.09,.5,metallic)*visibility;
+  lit+=vec3(1.0,.89,.76)*spec*mix(sheen,.5,metallic)*visibility;
   if(surfaceMaterial>3.5&&surfaceMaterial<4.5) lit=base*1.8;
   float fog=1.0-exp(-pow(length(eye-worldPosition)/fogDistance,1.6));
   lit=mix(lit,vec3(.65,.74,.76),fog);
@@ -211,7 +238,7 @@ export class Graphics {
     if (!gl) throw new Error('WebGL2 is required. Enable hardware acceleration or use a WebGL2-capable browser.');
     this.gl = gl;
     const uniforms = ['model', 'viewProjection', 'lightProjection', 'eye', 'sun', 'shadowMap', 'shadowTexel',
-      'softShadows', 'opacity', 'fogDistance', 'worldTime', 'logDepthScale', 'mapRoads', 'roadLowering'];
+      'softShadows', 'opacity', 'fogDistance', 'worldTime', 'logDepthScale', 'mapRoads'];
     this.scene = program(gl, vertex, fragment, uniforms);
     this.flightScene = program(gl, vertex, fragment, uniforms, 'FLIGHT_DEPTH');
     this.depth = program(gl, shadowVertex, shadowFragment, ['model', 'lightProjection']);
@@ -376,7 +403,6 @@ export class Graphics {
       perspective(camera.fov, width / height, 0.12, far), view));
     gl.uniform1f(u.logDepthScale, 1 / Math.log2(1 + far));
     gl.uniform1i(u.mapRoads, camera.mapRoads ? 1 : 0);
-    gl.uniform3fv(u.roadLowering, camera.roadLowering ?? [0, 0, 0]);
     gl.uniformMatrix4fv(u.lightProjection, false, light);
     gl.uniform3fv(u.eye, camera.eye);
     gl.uniform3fv(u.sun, this.sun);

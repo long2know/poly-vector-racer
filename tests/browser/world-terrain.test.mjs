@@ -181,14 +181,12 @@ test('road ribbons share one validated download, preserve coverage and switch pa
   assert.ok(groups.get(9).every(p => p[1] >= 69.3 && p[0] > 512), 'the bridge keeps the authored deck over water');
   assert.equal(scenery.diagnostics().roadStyle, 'terrain');
   scenery.setMapRoads(true);
-  frame = draw({ view: 'ground' });
+  frame = draw();
   assert.equal(frame.camera.mapRoads, true);
   assert.equal(scenery.diagnostics().roadStyle, 'map');
   assert.equal(scenery.diagnostics().roadMeshes, 1);
-  assert.ok(frame.draws.some(draw => draw.mesh === road), 'style and view toggles reuse the identical GPU mesh');
-  for (const [i, lift] of [.10, .075, .05].entries())
-    assert.ok(groups.get(6 + i).every(p => Math.abs(p[1] - frame.camera.roadLowering[i] - 25 - lift) < 1e-8));
-  assert.equal(terrain.sample(x, z), 25, 'view and palette switches do not alter collision height');
+  assert.ok(frame.draws.some(draw => draw.mesh === road), 'aerial palette toggles reuse the identical GPU mesh');
+  assert.equal(terrain.sample(x, z), 25, 'palette switches do not alter collision height');
   scenery.setMapRoads(false);
   assert.equal(draw().camera.mapRoads, false);
   assert.equal(fetchRoad.mock.callCount(), 1);
