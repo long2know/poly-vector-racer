@@ -2,7 +2,7 @@ import { FlightScene } from './flight-scene.js';
 import { Builder } from './scene.js';
 import { cross, dot, pose, sub } from './engine/math.js';
 import { triangulate } from './engine/triangulate.js';
-import { fetchWorldJson, groundRoadLowering } from './world-terrain.js';
+import { fetchWorldJson } from './world-terrain.js';
 
 const metal = [.69, .74, .72], glass = [.16, .37, .44], pale = [.9, .88, .75];
 const buildingColours = [[.61, .65, .61], [.53, .59, .62], [.43, .56, .63], [.62, .55, .46], [.52, .60, .61]];
@@ -262,11 +262,12 @@ export class WorldScenery {
 
   decorate(frame, x, z, options = {}) {
     const origin = [Math.round(x / 2048) * 2048, 0, Math.round(z / 2048) * 2048];
-    const balanced = this.graphics.quality === 'balanced';
+    const balanced = this.graphics.quality === 'balanced', ground = options.view === 'ground';
     const far = options.far ?? (balanced ? 140000 : 238000);
     const now = performance.now();
-    const tiles = this.terrain.draw(x, z, far, balanced, now);
+    const tiles = this.terrain.draw(x, z, far, balanced, now, ground);
     this.updateBuildings(x, z, now);
+    if (ground) options.appendGroundActors?.(frame);
     if (this.cityMesh) frame.draws.push({ mesh: this.cityMesh, shadow: false });
     frame.draws = frame.draws.map(draw => {
       const model = draw.model ? draw.model.slice() : pose([0, 0, 0]);
@@ -279,10 +280,10 @@ export class WorldScenery {
     frame.camera.eye = sub(frame.camera.eye, origin);
     frame.camera.target = sub(frame.camera.target, origin);
     frame.camera.far = far;
-    frame.camera.fogDistance = options.fogDistance ?? (options.view === 'ground' ? far * .86 : 137000);
+    frame.camera.fogDistance = options.fogDistance ?? (ground ? far * .86 : 137000);
     frame.camera.logarithmicDepth = true;
-    frame.camera.mapRoads = this.mapRoads;
-    frame.camera.roadLowering = options.view === 'ground' ? groundRoadLowering : undefined;
+    frame.camera.mapRoads = !ground && this.mapRoads;
+    this.groundView = ground;
     return frame;
   }
 
@@ -385,7 +386,7 @@ export class WorldScenery {
       city: this.city?.id ?? null,
       landmarks: this.nearbyLandmarks ?? [],
       roadMeshes: terrain.roads?.meshCount ?? 0,
-      roadStyle: this.mapRoads ? 'map' : 'terrain',
+      roadStyle: this.groundView && terrain.roads ? 'street' : this.mapRoads ? 'map' : 'terrain',
       trees: terrain.forest?.count ?? 0,
     };
   }

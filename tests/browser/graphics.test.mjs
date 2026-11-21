@@ -336,10 +336,27 @@ async function browserFixture(moduleUrl) {
       terrain: await read(draws, roadView),
       map: await read(draws, { ...roadView, mapRoads: true }),
     });
-    const ground = { ...roadView, mapRoads: true, roadLowering: [1.14, .905, .68] };
-    result.groundRoads = {
-      surfaceAtFlightHeight: await read(road[0], ground), bridgeAtFlightHeight: await read(road[3], ground),
-      sky: await read([], ground), error: gl.getError(),
+    const street = new Geometry();
+    street.quad([-4, 0, -4], [-4, 0, 4], [4, 0, 4], [4, 0, -4], [.104, .111, .123], 12);
+    const asphalt = graphics.mesh(street, true);
+    // Sample several 6.25 cm aggregate cells at a sub-centimeter pixel footprint.
+    canvas.style.width = canvas.style.height = '192px';
+    const sampleSize = 64;
+    const asphaltPixels = async (mapRoads, origin = 0) => {
+      const model = identity.slice();
+      model[12] = origin;
+      const ground = { ...roadView, eye: [origin, 1.2, 0], target: [origin, 0, 0], up: [0, 0, 1], mapRoads };
+      if (!graphics.render([{ mesh: asphalt, model, shadow: false }], ground, 0))
+        throw new Error('The drained GPU queue rejected an asphalt frame');
+      const pixels = new Uint8Array(sampleSize * sampleSize * 4);
+      gl.readPixels((canvas.width - sampleSize) / 2, (canvas.height - sampleSize) / 2,
+        sampleSize, sampleSize, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      await drain();
+      return [...pixels].filter((_, i) => i % 4 === 0);
+    };
+    result.asphalt = {
+      sampleSize,
+      pixels: await asphaltPixels(false), map: await asphaltPixels(true), rebased: await asphaltPixels(false, 2048), error: gl.getError(),
     };
     const { FlightScene } = await import(new URL('../flight-scene.js', moduleUrl));
     canvas.style.width = '640px';
@@ -572,10 +589,14 @@ test('real WebGL2: queue, shadows, transparency, flight depth and map roads',
       assert.ok(local.map.slice(0, 3).every((channel, i) => channel > local.terrain[i] + 30),
         `pale local street: ${local.map} vs. ${local.terrain}`);
       assert.deepEqual(bridge.map, freeway.map, 'the same class has the same color on a bridge');
-      assert.equal(result.groundRoads.error, 0);
-      assert.deepEqual(result.groundRoads.surfaceAtFlightHeight, result.groundRoads.sky,
-        'ground rendering lowers the actual surface geometry, not just its diagnostics');
-      assert.deepEqual(result.groundRoads.bridgeAtFlightHeight, bridge.map, 'ground rendering does not lower a bridge');
+      const street = result.asphalt;
+      assert.equal(street.error, 0);
+      assert.ok(Math.max(...street.pixels) < 100 && Math.min(...street.pixels) > 10, 'the asphalt renders dark without becoming black');
+      assert.ok(street.pixels.some((p, i) => i % street.sampleSize > 0 && Math.abs(p - street.pixels[i - 1]) >= 5),
+        'asphalt renders visible high-frequency aggregate even with uniform vertex color');
+      assert.deepEqual(street.pixels, street.map, 'the map palette cannot recolor the ground asphalt material');
+      assert.ok(street.pixels.filter((p, i) => Math.abs(p - street.rebased[i]) <= 2).length > street.pixels.length * .98,
+        'asphalt aggregate stays fixed when the camera/world origin shifts by 2048 m');
     } finally {
       for (const request of pending.values()) clearTimeout(request.timeout);
       socket?.close();

@@ -7,6 +7,16 @@ export async function verifySeattleDrive({
   const state = 'stuntRacer.observe()';
   const diagnostics = 'stuntRacer.diagnostics()';
   const geography = `${diagnostics}.geographicDrive`;
+  const pedestrians = `${geography}.pedestrians`;
+  const walkers = () => evaluate(`({ ...${pedestrians}, player: ${state}.player })`);
+  const verifyClearWalkers = ({ visible, poses, player }) => {
+    assert.equal(visible, poses.length);
+    for (const pose of poses) {
+      assert.ok([pose.x, pose.y, pose.z, pose.phase, pose.yaw].every(Number.isFinite));
+      assert.ok(Math.hypot(pose.x - player.x, pose.z - player.z) > 3.34,
+        'Rendered pedestrians make room for the game car.');
+    }
+  };
   const availability = await evaluate(`${diagnostics}.trackChoices.find(t => t.id === 'experience:seattle-drive')`);
   assert.ok(availability, 'Seattle must be a distinct course.');
   if (!availability.available) {
@@ -40,10 +50,24 @@ export async function verifySeattleDrive({
   assert.ok(scenery.streets > 3500, 'The map uses the bounded real Seattle street component.');
   assert.ok(await evaluate(`document.querySelector('.world-credit').checkVisibility() &&
     document.querySelector('.world-credit').textContent.includes('OpenStreetMap')`));
+  await waitFor(`${pedestrians}.visible >= 2`, 45000);
+  const garageWalkers = await walkers();
+  verifyClearWalkers(garageWalkers);
+  assert.equal(garageWalkers.time, 0);
   await screenshot('61-seattle-drive-garage.png');
 
   await click('start-button');
   await waitFor(`${state}.phase === 'racing' && !document.querySelector('#seattle-destination').disabled`);
+  const startingWalkers = await walkers();
+  await driveUntil(`(() => {
+    const current = ${pedestrians}, previous = ${JSON.stringify(startingWalkers.poses)};
+    return current.visible >= 2 && current.time > ${startingWalkers.time} && current.poses.some(pose => {
+      const start = previous.find(candidate => candidate.id === pose.id);
+      return start && Math.hypot(pose.x - start.x, pose.z - start.z) > .25 && Math.abs(pose.phase - start.phase) > .25;
+    });
+  })()`, 8000);
+  const walking = await walkers();
+  verifyClearWalkers(walking);
   const stops = await evaluate(`Array.from(document.querySelector('#seattle-destination').options, option => option.value).filter(Boolean)`);
   assert.ok(stops.includes('great-wheel') && stops.includes('space-needle') && stops.includes('amazon-spheres'));
   await select('seattle-destination', 'great-wheel');
@@ -51,21 +75,34 @@ export async function verifySeattleDrive({
   assert.ok(guide.points.length > 10 && guide.length > 500 && guide.length < 520);
   assert.ok(await evaluate(`document.querySelector('#map-drive-route').getAttribute('d').length > 100`));
   await click('seattle-autopilot');
-  await driveUntil(`${state}.drive.autopilot && ${state}.drive.drivenDistance > 10`, 12000);
+  await driveUntil(`${state}.drive.autopilot && ${state}.drive.drivenDistance > 10 &&
+    ${pedestrians}.poses.some(pose => pose.yielding > .05)`, 16000);
+  verifyClearWalkers(await walkers());
   await click('pause-button');
   await waitFor(`${state}.phase === 'paused'`);
+  // The pause command updates native state before the scene replaces its interpolated poses.
+  const pauseSubmission = await evaluate(`${diagnostics}.submittedFrames`);
+  await waitFor(`${diagnostics}.submittedFrames >= ${pauseSubmission + 2} &&
+    ${pedestrians}.time === ${state}.time && ${pedestrians}.visible > 0`);
   const paused = await observe();
+  const pausedWalkers = await walkers();
   await sleep(350);
   const frozen = await observe();
+  const frozenWalkers = await walkers();
   assert.equal(frozen.tick, paused.tick);
   assert.equal(frozen.drive.remaining, paused.drive.remaining);
   assert.equal(frozen.player.x, paused.player.x);
   assert.equal(frozen.player.z, paused.player.z);
   assert.equal(frozen.drive.autopilot, true);
+  assert.equal(frozenWalkers.time, pausedWalkers.time);
+  const stillVisible = frozenWalkers.poses.filter(walker => pausedWalkers.poses.some(previous => previous.id === walker.id));
+  assert.ok(stillVisible.length > 0);
+  for (const pose of stillVisible) assert.deepEqual(pose, pausedWalkers.poses.find(previous => previous.id === pose.id));
   await click('resume-button');
   await driveUntil(`${state}.drive.autopilot && Math.abs(${state}.player.yaw - ${origin.player.yaw}) > .7 && ${state}.player.speed > 2`, 18000);
   const turn = await observe();
   assert.ok(turn.player.yaw !== origin.player.yaw, 'The WASM car must actually turn on the route.');
+  verifyClearWalkers(await walkers());
   await screenshot('62-seattle-drive-autopilot.png');
   await driveUntil(`${state}.drive.status === 'arrived'`, 145000);
   const arrived = await observe();
@@ -105,7 +142,13 @@ export async function verifySeattleDrive({
   await click('garage-button');
   await waitFor(`${state}.phase === 'ready' && ${state}.tick === 0`);
   assert.equal((await observe()).drive.autopilot, false);
+  await waitFor(`${pedestrians}.time === 0 && ${pedestrians}.visible >= 2`);
+  const resetWalkers = await walkers();
+  const resetPose = resetWalkers.poses.find(pose => garageWalkers.poses.some(previous => previous.id === pose.id));
+  assert.ok(resetPose);
+  assert.deepEqual(resetPose, garageWalkers.poses.find(previous => previous.id === resetPose.id));
   await select('game-mode', 'time-attack');
-  await waitFor(`${diagnostics}.ready && ${diagnostics}.selectedTrack === 'included:foundry' && !${state}.drive`);
-  return { origin, scenery, guide, paused, turn, arrived, reroute, before, manual };
+  await waitFor(`${diagnostics}.ready && ${diagnostics}.selectedTrack === 'included:foundry' &&
+    !${state}.drive && ${geography} === null`);
+  return { origin, scenery, garageWalkers, walking, guide, paused, pausedWalkers, turn, arrived, reroute, before, manual };
 }

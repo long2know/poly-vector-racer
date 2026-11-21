@@ -163,17 +163,19 @@ metre bounds, row count and point count. Its only route is
 way ID, one of three road classes, `surface` or `bridge`, and a centerline
 with points `[x,z]` or `[x,z,deckElevation]`. The host checks a declared
 database at startup; older manifests with no entry still run without roads.
-The browser fetches it only near Seattle and groups ribbons by displayed
-64/32 m terrain tile. Ribbons follow the same visible triangles (including
-both road edges); ground roads are suppressed on water faces, with actual
-mapped bridges overriding that rule. Tile meshes are bounded and released
-when no longer used or when leaving the scene. Large tiles are tessellated
-over several frames instead of uploading the whole city at once. The layer
-adds no collision or live map requests. The palette switch works on the
-existing buffers. The ground view places surface ribbons nearly flush with the
-terrain rather than exaggerating their lift for flight; mapped bridges keep
-their visual decks. The ground view can share the validated road document
-with the renderer through `WorldTerrain.loadRoads()`.
+The browser fetches it only near Seattle and groups roads by displayed
+64/32 m terrain tile. Flight retains its raised ribbons and palette switch
+on the existing buffers. Seattle Scenic Drive uses separate near-ground
+textured asphalt and exact-node corner paving, with stylized paint, curbs
+and sidewalks on nearby detailed local and arterial streets. Markings and
+sidewalks leave space at junctions and are omitted on wet facets and where
+elevated roads or freeway geometry would conflict. This is game artwork
+over the mapped centerlines, not surveyed lanes. Both views keep the mapped
+bridge decks and follow the visible terrain triangles for surface roads.
+Tile work is spread across frames and the compact meshes are released out of
+range or on scene exit. The layer adds no collision or live map requests.
+The ground view can share the validated road document with the renderer
+through `WorldTerrain.loadRoads()`.
 
 The scenery renderer batches trees into bounded, kilometre-scale patches
 sampled against the currently drawn terrain triangles. Their horizontal
