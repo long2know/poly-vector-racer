@@ -2,10 +2,12 @@ import { FlightScene } from './flight-scene.js';
 import { Builder } from './scene.js';
 import { cross, dot, pose, sub } from './engine/math.js';
 import { triangulate } from './engine/triangulate.js';
-import { fetchWorldJson } from './world-terrain.js';
+import { fetchWorldJson, groundRoadLowering } from './world-terrain.js';
 
 const metal = [.69, .74, .72], glass = [.16, .37, .44], pale = [.9, .88, .75];
 const buildingColours = [[.61, .65, .61], [.53, .59, .62], [.43, .56, .63], [.62, .55, .46], [.52, .60, .61]];
+const bridgeDeckTop = 70.2;
+const landmarkRange = 28000, anchorLimit = 12;
 
 function ring(mesh, y, radius, depth, colour, sides = 16) {
   const at = (i, h) => [Math.cos(i * Math.PI * 2 / sides) * radius, h, Math.sin(i * Math.PI * 2 / sides) * radius];
@@ -180,7 +182,7 @@ function landmarkGeometry({ kind, span }) {
     const red = [.72, .20, .09], deck = 68, tower = 227, sideSpan = 340;
     const length = span + 2 * sideSpan;
     mesh.box([0, deck, 0], [28, 4, length], red, 2);
-    mesh.box([0, deck + 2.1, 0], [25.8, .2, length], [.19, .2, .20]);
+    mesh.box([0, bridgeDeckTop - .1, 0], [25.8, .2, length], [.19, .2, .20]);
     for (const z of [-span / 2, span / 2]) {
       for (const x of [-13.7, 13.7])
         mesh.box([x, (tower - 4) / 2, z], [8, tower + 4, 10], red, 2);
@@ -235,53 +237,103 @@ function buildingsGeometry(rows, terrain) {
   return { mesh, count };
 }
 
-export class WorldFlightScene extends FlightScene {
-  constructor(graphics, world, terrain) {
-    super(graphics, world);
+export class WorldScenery {
+  constructor(graphics, terrain, runways = []) {
+    this.graphics = graphics;
     this.terrain = terrain;
-    terrain.attach(graphics);
-    const { destination } = world.geography;
-    this.navigationWorld.landingSurfaces.push({ name: destination.name.split(' • ')[0],
-      centerX: destination.targetX, centerZ: destination.targetZ });
-    this.landmarks = terrain.region.landmarks.map(location => ({ location, mesh: graphics.mesh(landmarkGeometry(location)) }));
-    this.track.points = [world.runwayStart, { x: destination.targetX, z: destination.targetZ }];
+    terrain.attach(graphics, runways);
+    this.airfields = runways.map(surface => ({ surface, paved: true }));
+    if (terrain.region.runway && !runways.some(surface => surface.name === terrain.region.runway.name))
+      this.airfields.push({ surface: terrain.region.runway, paved: false });
+    this.landmarks = (terrain.region.landmarks ?? []).map(location => {
+      const builder = landmarkGeometry(location);
+      let anchorHeight = -Infinity;
+      for (let i = 1; i < builder.vertices.length; i += 10) anchorHeight = Math.max(anchorHeight, builder.vertices[i]);
+      return { location, mesh: graphics.mesh(builder, true),
+        anchorHeight: location.kind === 'golden-gate' ? bridgeDeckTop : anchorHeight };
+    });
     this.buildingCount = 0;
+    this.setMapRoads(false);
   }
 
-  update(state, dt, mode) {
-    const frame = super.update(state, dt, mode), { aircraft } = state.flight;
-    const origin = [Math.round(aircraft.x / 2048) * 2048, 0, Math.round(aircraft.z / 2048) * 2048];
-    const far = this.graphics.quality === 'balanced' ? 140000 : 238000;
+  setMapRoads(enabled) {
+    this.mapRoads = Boolean(enabled) && Boolean(this.terrain.region.roads);
+  }
+
+  decorate(frame, x, z, options = {}) {
+    const origin = [Math.round(x / 2048) * 2048, 0, Math.round(z / 2048) * 2048];
+    const balanced = this.graphics.quality === 'balanced';
+    const far = options.far ?? (balanced ? 140000 : 238000);
     const now = performance.now();
-    const tiles = this.terrain.draw(aircraft.x, aircraft.z, far, this.graphics.quality === 'balanced', now);
-    this.updateBuildings(aircraft, now);
+    const tiles = this.terrain.draw(x, z, far, balanced, now);
+    this.updateBuildings(x, z, now);
     if (this.cityMesh) frame.draws.push({ mesh: this.cityMesh, shadow: false });
-    this.nearbyLandmarks = [];
-    for (const { location, mesh } of this.landmarks) {
-      if (Math.hypot(location.x - aircraft.x, location.z - aircraft.z) >= 28000) continue;
-      const y = ['ballpark', 'spheres'].includes(location.kind)
-        ? this.terrain.visualSample(location.x, location.z, 7) : this.terrain.sample(location.x, location.z);
-      if (y === null) continue;
-      this.nearbyLandmarks.push(location.name);
-      frame.draws.push({ mesh, model: pose([location.x, location.kind === 'golden-gate' ? 0 : y - 1, location.z],
-        location.heading ?? (location.kind === 'ballpark' ? 1.09 : 0)), shadow: false });
-    }
-    for (const draw of frame.draws) {
+    frame.draws = frame.draws.map(draw => {
       const model = draw.model ? draw.model.slice() : pose([0, 0, 0]);
       model[12] -= origin[0];
       model[14] -= origin[2];
-      draw.model = model;
-    }
+      return { ...draw, model };
+    });
+    frame.landmarkAnchors = this.appendLandmarks(frame.draws, x, z, origin, Math.min(landmarkRange, far));
     frame.draws.unshift(...tiles.map(({ mesh, offset, shadow }) => ({ mesh, model: pose(sub(offset, origin)), shadow })));
     frame.camera.eye = sub(frame.camera.eye, origin);
     frame.camera.target = sub(frame.camera.target, origin);
     frame.camera.far = far;
-    frame.camera.fogDistance = 137000;
+    frame.camera.fogDistance = options.fogDistance ?? (options.view === 'ground' ? far * .86 : 137000);
+    frame.camera.logarithmicDepth = true;
+    frame.camera.mapRoads = this.mapRoads;
+    frame.camera.roadLowering = options.view === 'ground' ? groundRoadLowering : undefined;
     return frame;
   }
 
-  updateBuildings(aircraft, now) {
-    const city = this.terrain.region.cities.find(p => Math.hypot(aircraft.x - p.x, aircraft.z - p.z) < 27500);
+  appendLandmarks(draws, x, z, origin, range) {
+    const distance = (px, pz) => Math.hypot(px - x, pz - z);
+    const candidates = [];
+    const addAnchor = (name, position, priority, metres) => {
+      if (typeof name !== 'string' || !name.trim() || !position.every(Number.isFinite) || !(metres < range)) return;
+      candidates.push({ name: name.trim(), position, priority, metres });
+    };
+    this.nearbyLandmarks = [];
+    for (const { location, mesh, anchorHeight } of this.landmarks) {
+      const metres = distance(location.x, location.z);
+      if (!(metres < range)) continue;
+      const y = ['ballpark', 'spheres'].includes(location.kind)
+        ? this.terrain.visualSample(location.x, location.z, 7) : this.terrain.sample(location.x, location.z);
+      if (!Number.isFinite(y)) continue;
+      const heading = Number.isFinite(location.heading) ? location.heading : location.kind === 'ballpark' ? 1.09 : 0;
+      const model = pose([location.x - origin[0], location.kind === 'golden-gate' ? 0 : y - 1, location.z - origin[2]], heading);
+      this.nearbyLandmarks.push(location.name);
+      draws.push({ mesh, model, shadow: false });
+      addAnchor(location.name, [model[12], model[13] + anchorHeight, model[14]], 0, metres);
+    }
+    for (const { surface, paved } of this.airfields) {
+      const { name, centerX, centerZ, height } = surface;
+      const metres = distance(centerX, centerZ);
+      if (!(metres < range)) continue;
+      const y = paved ? height + .045 : this.terrain.visualSample?.(centerX, centerZ);
+      addAnchor(name, [centerX - origin[0], y, centerZ - origin[2]], paved ? 1 : 2, metres);
+    }
+    for (const target of this.terrain.region.destinations ?? []) {
+      const { id, targetX, targetZ } = target, metres = distance(targetX, targetZ);
+      if (id === 'boeing' || !(metres < range) || this.landmarks.some(({ location }) =>
+        Math.hypot(targetX - location.x, targetZ - location.z) < 1200)) continue;
+      const [place, detail] = target.name.split(' • ');
+      const name = ['Alaska', 'Hawaii'].includes(place) ? detail : place;
+      addAnchor(name, [targetX - origin[0], this.terrain.visualSample?.(targetX, targetZ), targetZ - origin[2]], 3, metres);
+    }
+    const anchors = [], names = new Set();
+    for (const { name, position } of candidates.sort((a, b) => a.priority - b.priority || a.metres - b.metres)) {
+      if (anchors.length >= anchorLimit) break;
+      const key = name.toLowerCase();
+      if (names.has(key)) continue;
+      names.add(key);
+      anchors.push({ name, position });
+    }
+    return anchors;
+  }
+
+  updateBuildings(x, z, now) {
+    const city = this.terrain.region.cities?.find(p => Math.hypot(x - p.x, z - p.z) < 27500);
     if (city !== this.city) {
       this.buildingLoad?.abort();
       this.buildingLoad = null;
@@ -315,11 +367,64 @@ export class WorldFlightScene extends FlightScene {
         (!this.cityMesh || detailLevel > this.cityDetail)) {
       const { mesh, count } = buildingsGeometry(this.buildingData, this.terrain);
       if (this.cityMesh) this.graphics.releaseMesh(this.cityMesh);
-      this.cityMesh = this.graphics.mesh(mesh);
+      this.cityMesh = this.graphics.mesh(mesh, true);
       this.buildingCount = count;
       this.cityDetail = detailLevel;
     }
   }
+
+  diagnostics() {
+    const terrain = this.terrain, visible = terrain.visible.filter(tile => tile.mesh);
+    return {
+      region: terrain.region.id, buildings: this.buildingCount,
+      visible: visible.length, loaded: terrain.loaded.size,
+      finest: Math.max(-1, ...visible.map(tile => tile.level)),
+      pending: terrain.pending.size, errors: terrain.errors.size,
+      meshCount: this.graphics.meshes.size,
+      meshBytes: this.graphics.meshBytes,
+      city: this.city?.id ?? null,
+      landmarks: this.nearbyLandmarks ?? [],
+      roadMeshes: terrain.roads?.meshCount ?? 0,
+      roadStyle: this.mapRoads ? 'map' : 'terrain',
+      trees: terrain.forest?.count ?? 0,
+    };
+  }
+
+  dispose() {
+    this.buildingLoad?.abort();
+    this.terrain.dispose();
+    if (this.cityMesh) this.graphics.releaseMesh(this.cityMesh);
+    this.cityMesh = null;
+    for (const { mesh } of this.landmarks) this.graphics.releaseMesh(mesh);
+    this.landmarks = [];
+  }
+}
+
+export class WorldFlightScene extends FlightScene {
+  constructor(graphics, world, terrain, aircraftId = 'f18') {
+    super(graphics, world, aircraftId);
+    this.terrain = terrain;
+    this.scenery = new WorldScenery(graphics, terrain, world.landingSurfaces);
+    const { destination } = world.geography;
+    this.navigationWorld.landingSurfaces.push({ name: destination.name.split(' • ')[0],
+      centerX: destination.targetX, centerZ: destination.targetZ });
+    this.track.points = [world.runwayStart, { x: destination.targetX, z: destination.targetZ }];
+  }
+
+  get landmarks() { return this.scenery.landmarks; }
+
+  get nearbyLandmarks() { return this.scenery.nearbyLandmarks; }
+
+  get buildingCount() { return this.scenery.buildingCount; }
+
+  setMapRoads(enabled) { this.scenery.setMapRoads(enabled); }
+
+  update(state, dt, mode) {
+    const frame = super.update(state, dt, mode), { aircraft } = state.flight;
+    return this.scenery.decorate(frame, aircraft.x, aircraft.z);
+  }
+
+  updateBuildings(aircraft, now) { this.scenery.updateBuildings(aircraft.x, aircraft.z, now); }
 
   mapPoint(x, z) {
     const [centerX, centerZ, metresPerPixel] = this.mapFrame();
@@ -354,22 +459,14 @@ export class WorldFlightScene extends FlightScene {
   diagnostics() {
     const destination = this.world.geography.destination;
     return {
-      region: this.terrain.region.id, destination: destination.id, buildings: this.buildingCount,
-      visible: this.terrain.visible.filter(tile => tile.mesh).length, loaded: this.terrain.loaded.size,
-      finest: Math.max(-1, ...this.terrain.visible.filter(tile => tile.mesh).map(tile => tile.level)),
-      pending: this.terrain.pending.size, errors: this.terrain.errors.size,
+      ...this.scenery.diagnostics(),
+      destination: destination.id,
       targetElevation: this.terrain.sample(destination.targetX, destination.targetZ),
-      meshCount: this.graphics.meshes.size,
-      city: this.city?.id ?? null,
-      landmarks: this.nearbyLandmarks ?? [],
-      roadMeshes: this.terrain.roads?.meshCount ?? 0,
     };
   }
 
   dispose() {
-    this.buildingLoad?.abort();
-    this.terrain.dispose();
-    if (this.cityMesh) this.graphics.releaseMesh(this.cityMesh);
-    for (const { mesh } of this.landmarks) this.graphics.releaseMesh(mesh);
+    this.scenery.dispose();
+    super.dispose();
   }
 }

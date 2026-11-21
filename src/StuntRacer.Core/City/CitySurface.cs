@@ -1,6 +1,6 @@
 namespace StuntRacer.Core.City;
 
-internal sealed class CitySurface(CityWorldDefinition world)
+internal sealed class CitySurface(CityWorldDefinition world) : IOpenDrivingSurface
 {
     public RoadSample Sample(double x, double z, double carY)
     {

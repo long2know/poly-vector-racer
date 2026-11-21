@@ -4,6 +4,7 @@ using System.Text.Json;
 using StuntRacer.Core;
 using StuntRacer.Core.SourceRuntime;
 using StuntRacer.Core.City;
+using StuntRacer.Core.GeographicDrive;
 using StuntRacer.Core.Stunts;
 using StuntRacer.Flight;
 using StuntRacer.FlightData;
@@ -33,11 +34,17 @@ public static partial class Browser
     public static void Main() { }
 
     [JSExport]
-    public static string Initialize() => flight is not null
-        ? JsonSerializer.Serialize(new { kind = "flight", flight.World.Name, world = flight.World }, Json)
-        : Game is CityDrivingSession city
+    public static string Initialize() => flight switch
+    {
+        FlightSimulation { World.Geography: not null } geographic =>
+            JsonSerializer.Serialize(new { kind = "flight", geographic.World.Name, world = geographic.World,
+                aircraft = AircraftMetadata(geographic.Aircraft) }, Json),
+        IFlightSession active => JsonSerializer.Serialize(new { kind = "flight", active.World.Name, world = active.World }, Json),
+        _ when Game is SeattleDrivingSession drive => SeattleDriveDefinition(drive),
+        _ => Game is CityDrivingSession city
             ? JsonSerializer.Serialize(new { kind = "city", city.World.Name, track = Game.Track, world = city.World }, Json)
-            : JsonSerializer.Serialize(Game.Track, Json);
+            : JsonSerializer.Serialize(Game.Track, Json)
+    };
 
     [JSExport]
     public static string SelectExperience(string mode)
@@ -68,6 +75,22 @@ public static partial class Browser
     }
 
     [JSExport]
+    public static string SelectFlightTraining()
+    {
+        RequireTrackChangeBoundary();
+        flight = new FlightTagRange();
+        experience = "flight-training";
+        return Initialize();
+    }
+
+    [JSExport]
+    public static string WorldFlightAircraft() => JsonSerializer.Serialize(
+        FlightSimulation.WorldAircraft.Select(AircraftMetadata), Json);
+
+    private static object AircraftMetadata(FlightAircraftProfile aircraft) =>
+        new { aircraft.Id, aircraft.Name, aircraft.MaximumMach };
+
+    [JSExport]
     public static void AddWorldTerrainTile(int level, int x, int z, string base64)
     {
         if (base64.Length != ((WorldFlightElevation.TileLength + 2) / 3) * 4)
@@ -79,9 +102,15 @@ public static partial class Browser
     public static void RemoveWorldTerrainTile(int level, int x, int z) => worldElevation.RemoveTile(level, x, z);
 
     [JSExport]
-    public static string SelectWorldFlight(string region, string destinationJson, string? runwayJson, string seedTiles)
+    public static string SelectWorldFlight(string region, string destinationJson, string? runwayJson, string seedTiles,
+        string aircraftId)
     {
         RequireTrackChangeBoundary();
+        if (!FlightSimulation.WorldAircraft.Any(profile => profile.Id == aircraftId))
+            throw new ArgumentException("Unknown World Flight aircraft.", nameof(aircraftId));
+        if (flight is FlightSimulation { World.Geography: not null } current &&
+            current.Aircraft.Id != aircraftId && current.Snapshot.Phase != "ready")
+            throw new InvalidOperationException("Return to the garage before changing aircraft.");
         if (region is not ("Lower 48" or "Alaska" or "Hawaii") || destinationJson.Length > 2048 || runwayJson?.Length > 2048)
             throw new InvalidDataException("World Flight departure metadata is invalid.");
         var destination = JsonSerializer.Deserialize<WorldFlightDestination>(destinationJson, Json)
@@ -95,7 +124,7 @@ public static partial class Browser
         foreach (var tile in seedTiles.Split(';'))
             elevation.AddTile(Convert.FromBase64String(tile));
         var world = FlightWorldDefinition.CreateGeographic(region, destination, runway, elevation);
-        flight = new FlightSimulation(world);
+        flight = new FlightSimulation(world, aircraftId);
         worldElevation = elevation;
         experience = "flight-world";
         return Initialize();
@@ -142,8 +171,8 @@ public static partial class Browser
     public static string SelectRacing()
     {
         RequireTrackChangeBoundary();
-        if (flight is null) return Initialize();
-        var reset = Game.Track.IsSpatial || Game is CityDrivingSession;
+        if (flight is null && Game is not SeattleDrivingSession) return Initialize();
+        var reset = Game.Track.IsSpatial || Game is CityDrivingSession or SeattleDrivingSession;
         Game = new GameSimulation(reset ? null : Game.Track);
         classicPhysics = false;
         flight = null;
@@ -188,6 +217,8 @@ public static partial class Browser
     [JSExport]
     public static void Command(string command)
     {
+        ArgumentNullException.ThrowIfNull(command);
+        if (command.Trim().Equals("scan", StringComparison.OrdinalIgnoreCase) && flight is not FlightTagRange) return;
         if (flight is not null) flight.Command(command);
         else Game.Command(command);
     }
@@ -198,7 +229,7 @@ public static partial class Browser
 
     private static string DrivingState(GameSnapshot snapshot)
     {
-        if (Game is not (CityDrivingSession or StuntParkSession))
+        if (Game is not (CityDrivingSession or StuntParkSession or SeattleDrivingSession))
             return JsonSerializer.Serialize(snapshot, Json);
         return JsonSerializer.Serialize(new
         {
@@ -206,7 +237,8 @@ public static partial class Browser
             snapshot.LapTime, snapshot.BestLap, snapshot.Progress, snapshot.Countdown, snapshot.Impact,
             snapshot.Recoveries, snapshot.Alpha, snapshot.Tick, snapshot.Message, snapshot.Race, snapshot.Trial,
             snapshot.Ghost, city = Game is CityDrivingSession city ? city.Activity : null,
-            stunt = Game is StuntParkSession stunt ? stunt.Challenge : null
+            stunt = Game is StuntParkSession stunt ? stunt.Challenge : null,
+            drive = Game is SeattleDrivingSession drive ? drive.Activity : null
         }, Json);
     }
 
@@ -291,7 +323,9 @@ public static partial class Browser
         vehicleMode = flight is null ? "racing" : "flight",
         physicsProfile = flight is OriginalFlightSession ? "amiga-flight-source-compatible" :
             flight?.World.Geography is not null ? "authored-flight-world" :
+            flight is FlightTagRange ? "authored-flight-training" :
             flight is not null ? "authored-flight" : Game is CityDrivingSession ? "authored-city-driving" :
+            Game is SeattleDrivingSession ? "authored-seattle-driving" :
             Game is StuntParkSession ? "authored-spatial-stunt-contacts" :
             classicPhysics ? "amiga-derived-source-compatible" : "authored",
         originalPhysicsAvailable = false,
@@ -316,13 +350,17 @@ public static partial class Browser
         contactAxleDistanceMetres = flight is not null ? 0 : classicPhysics ? 256 * sourcePackage!.DisplayMetresPerSourceUnit : 2.52,
         trackData = flight is OriginalFlightSession ? "amiga-flight-user-disk" :
             flight?.World.Geography is not null ? "streamed-elevation" :
+            flight is FlightTagRange ? "authored-flight-range" :
             flight is not null ? "authored-flight-world" : Game is CityDrivingSession ? "authored-city-world" :
+            Game is SeattleDrivingSession ? "osm-seattle-surface-streets" :
             Game is StuntParkSession ? "authored-spatial-stunt-park" : sourceTrackActive ? "amiga-derived-reference-data" :
             importedGeometry ? "private-source-format-geometry" : "authored",
         qualification = flight is OriginalFlightSession ? "verified-user-disk-original-flight-rules-enhanced-renderer" :
             flight?.World.Geography is not null ? "authored-flight-with-geographic-terrain" :
+            flight is FlightTagRange ? "authored-fictional-flight-challenge" :
             flight is not null ? "authored-flight-prototype-not-original-port" :
             Game is CityDrivingSession ? "authored-open-world-city-not-midtown-game-code" :
+            Game is SeattleDrivingSession ? "offline-game-navigation-only" :
             Game is StuntParkSession ? "authored-stunt-contacts-not-original-stunts-engine" :
             sourceTrackActive || importedGeometry ? "unqualified-candidate" : "authored-approximation"
     }, Json);

@@ -76,4 +76,8 @@ public sealed record FlightSnapshot(
     string Message,
     FlightDisplaySnapshot? Display = null,
     FlightConfigurationSnapshot? Configuration = null,
-    FlightWorldActivity? Activity = null);
+    FlightWorldActivity? Activity = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlightRangeState? Training { get; init; }
+}

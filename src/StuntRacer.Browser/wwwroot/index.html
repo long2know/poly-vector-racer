@@ -13,6 +13,7 @@
   <main id="viewport" aria-label="Poly Vector Racer">
     <canvas id="game" tabindex="0" aria-label="3D racing game. Arrow keys or WASD drive, Space boosts. Touchscreens have a steering pad and gas pedal. Open Controls for all options."></canvas>
     <div class="vignette" aria-hidden="true"></div>
+    <div id="flight-landmark-labels" class="flight-landmark-labels" hidden></div>
     <header class="topbar">
       <a class="brand" href="./" aria-label="Poly Vector Racer home">
         <svg viewBox="0 0 38 32" aria-hidden="true"><path d="M1 22h10L23 2h14v8h-9L16 30H1z" fill="currentColor"/></svg>
@@ -39,6 +40,7 @@
       <p id="menu-intro" class="intro">A ribbon of tarmac. A very long way down.<br>Find your line. Save your boost. Stick the landing.</p>
       <nav class="experience-picker" aria-label="Choose a driving or flight experience">
         <button id="experience-city" type="button" data-experience="free-roam" disabled>CITY<small>OPEN WORLD</small></button>
+        <button id="experience-seattle" type="button" data-experience="seattle-drive" aria-describedby="seattle-availability" disabled>SEATTLE<small id="seattle-short-status">SCENIC DRIVE</small></button>
         <button id="experience-hard" type="button" data-experience="hard-driving" disabled>HARD DRIVIN'<small>PROVING GROUND</small></button>
         <button id="experience-stunts" type="button" data-experience="stunts" disabled>STUNTS<small>LOOP PARK</small></button>
         <button id="experience-flight" type="button" data-experience="flight" disabled>FLIGHT<small>AMIGA / JET</small></button>
@@ -53,11 +55,13 @@
             <option value="city-blitz">CITY BLITZ / CHECKPOINT RUSH</option>
             <option value="city-circuit">CITY CIRCUIT / STREET RACE</option>
           </optgroup>
+          <option value="seattle-drive" disabled>SEATTLE SCENIC DRIVE / OFFLINE GPS</option>
           <optgroup label="Stunt-driving experiences">
             <option value="hard-driving">HARD DRIVIN' / PROVING GROUND</option>
             <option value="stunts">STUNTS / LOOP &amp; JUMP PARK</option>
           </optgroup>
           <option value="flight">FLIGHT / INTERCEPTOR BAY</option>
+          <option value="flight-training">FLIGHT TRAINING / DRONE &amp; BEACON</option>
           <option value="flight-original" disabled>FLIGHT / AMIGA ORIGINAL MODEL</option>
           <option value="flight-world" disabled>WORLD FLIGHT / UNITED STATES</option>
         </select>
@@ -66,9 +70,13 @@
         <span id="start-label">WARMING UP</span><span class="button-arrow" aria-hidden="true">&#8599;</span>
       </button>
       <p id="load-status" class="load-status" role="status">Loading the C# WebAssembly engine...</p>
-      <button id="air-start-button" class="secondary flight-only" type="button">AIR START / SKIP THE RUNWAY</button>
+      <p id="seattle-availability" class="seattle-availability" hidden></p>
+      <button id="air-start-button" class="secondary flight-only non-training-flight" type="button">AIR START / SKIP THE RUNWAY</button>
       <button id="world-flight-button" class="secondary" type="button" disabled>WORLD FLIGHT / SEATTLE &amp; U.S.</button>
-      <label class="menu-mode world-flight-only" for="world-departure-menu">DEPARTURE<select id="world-departure-menu" disabled></select></label>
+      <div class="world-flight-only world-brief-selects">
+        <label class="menu-mode" for="world-departure-menu">DEPARTURE<select id="world-departure-menu" disabled></select></label>
+        <label class="menu-mode" for="world-aircraft-menu">AIRCRAFT<select id="world-aircraft-menu" disabled></select></label>
+      </div>
       <div class="quick-controls keyboard-hints racing-only"><kbd>W A S D</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>BOOST</span></div>
       <div class="quick-controls keyboard-hints flight-only"><kbd>&larr; / &rarr;</kbd><span>AILERONS</span><kbd>+ / -</kbd><span>SET THROTTLE</span></div>
       <div class="quick-controls touch-hints racing-only"><span>TWO THUMBS: STEER LEFT / HOLD GAS RIGHT<br>SLIDE UP ON GAS FOR TURBO</span></div>
@@ -99,12 +107,21 @@
           <path id="map-water" class="world-flight-only" fill="#236e7c" opacity=".8"/>
           <path id="map-outline" fill="none" stroke="#14201e" stroke-width="8" stroke-linejoin="round"/>
           <path id="map-road" fill="none" stroke="#d4d7c7" stroke-width="2.5" stroke-linejoin="round"/>
+          <path id="map-drive-route" fill="none" stroke="#96ffce" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
           <circle id="map-start" r="3" fill="#d4d7c7"/>
           <circle id="map-player" r="4.5" fill="#ff6536" stroke="#fff1d2" stroke-width="1.5"/>
           <circle id="map-target" r="4" fill="#a8f542" stroke="#fff1d2" stroke-width="1" hidden/>
         </svg>
         <span id="map-label">SKYLINE / TIME ATTACK</span>
       </div>
+      <section id="seattle-gps" class="seattle-gps" aria-label="Seattle Drive GPS" hidden>
+        <label for="seattle-destination" class="eyebrow">OFFLINE GPS / DESTINATION</label>
+        <div>
+          <select id="seattle-destination" disabled></select>
+          <button id="seattle-autopilot" type="button" aria-label="Toggle in-game autopilot" aria-pressed="false" disabled>AUTOPILOT</button>
+        </div>
+        <p id="seattle-gps-status" role="status"></p>
+      </section>
       <div class="telemetry">
         <div class="meter-label"><span id="boost-label">TURBO RESERVE</span><strong id="boost-value">100%</strong></div>
         <div class="meter boost-meter"><i id="boost-fill"></i></div>
@@ -119,6 +136,11 @@
         <div class="rev-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
       </div>
       <div id="race-event" class="race-event" role="status"></div>
+      <div id="training-dashboard" class="training-dashboard" aria-label="Training scanner" hidden>
+        <strong id="training-score"></strong>
+        <span id="training-range"></span>
+        <span id="training-status" role="status"></span>
+      </div>
       <div id="driving-guidance" class="driving-guidance" hidden>
         <span id="route-arrow" class="route-arrow" aria-hidden="true">&#8593;</span>
         <div><strong id="world-district"></strong><span id="world-objective"></span></div>
@@ -147,18 +169,23 @@
       <button id="pause-button" class="pause-button" type="button" aria-label="Pause race">II</button>
     </section>
 
-    <div id="flight-view-controls" class="flight-only" role="group" aria-label="Flight views" hidden>
+    <div id="flight-view-controls" class="flight-only" role="group" aria-label="Flight views and tools" hidden>
       <button id="flight-look-left" type="button" class="touch-glance" data-view="left" aria-label="Look left" title="Look left (4)">&#8592;</button>
       <button id="flight-view-reset" type="button" data-view="forward" aria-keyshortcuts="5" title="Center the flight view (5 or 8)">CENTER VIEW</button>
       <button id="flight-look-rear" type="button" class="touch-glance" data-view="rear" aria-label="Look aft" title="Look aft (2)">AFT</button>
       <button id="flight-look-right" type="button" class="touch-glance" data-view="right" aria-label="Look right" title="Look right (6)">&#8594;</button>
+      <div id="world-scenery-controls" class="world-flight-only" role="group" aria-label="World Flight scenery">
+        <button id="world-label-button" type="button" aria-label="Show landmark names" aria-pressed="false" title="Show names above visible landmarks">LABELS</button>
+        <button id="world-road-button" type="button" aria-label="Use map-style road tint" aria-pressed="false" title="Tint mapped roads without changing coverage" hidden>MAP ROADS</button>
+      </div>
+      <button id="training-scan-button" type="button" aria-keyshortcuts="T" title="Scan a nearby practice prop (T)" hidden>SCAN</button>
     </div>
 
     <section id="pause-panel" class="modal-panel" aria-labelledby="pause-title" hidden>
       <span class="eyebrow">TAKE A BREATHER</span>
       <h2 id="pause-title">ON HOLD.</h2>
-      <p>Your run is paused. The track can wait.</p>
-      <button id="resume-button" type="button" class="primary">BACK TO THE TRACK <span aria-hidden="true">&#8599;</span></button>
+      <p id="pause-copy">Your run is paused. The track can wait.</p>
+      <button id="resume-button" type="button" class="primary"><span id="resume-label">BACK TO THE TRACK</span><span aria-hidden="true">&#8599;</span></button>
       <button id="restart-button" type="button" class="secondary">RESTART RUN</button>
       <button id="garage-pause" type="button" class="secondary">GARAGE / CHOOSE MODE</button>
     </section>
@@ -198,7 +225,7 @@
     </div>
     <div id="toast" class="toast" role="status" hidden></div>
     <div id="stats" class="stats" hidden></div>
-    <footer class="footer"><span id="track-mode">INSPIRED BY THE AMIGA ORIGINAL / AUTHORED PLAYABLE PROTOTYPE</span><span class="world-flight-only world-credit">Elevation: USGS 3DEP / NOAA NCEI · Coast: Natural Earth · Buildings &amp; Seattle roads: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></span><span id="device-label"><i class="device-dot"></i> KEYBOARD READY</span></footer>
+    <footer class="footer"><span id="track-mode">INSPIRED BY THE AMIGA ORIGINAL / AUTHORED PLAYABLE PROTOTYPE</span><span class="geographic-credit world-credit">Elevation: USGS 3DEP / NOAA NCEI · Coast: Natural Earth · Buildings &amp; Seattle roads: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></span><span id="device-label"><i class="device-dot"></i> KEYBOARD READY</span></footer>
   </main>
 
   <dialog id="help-dialog">
@@ -211,7 +238,7 @@
     </div>
     <div class="flight-only flight-brief">
       <h3>FLIGHT CONTROLS</h3>
-      <p>Throttle up along the runway, then gently pull back above about 130 knots.
+      <p class="non-training-flight">Throttle up along the runway, then gently pull back above about 130 knots.
         Retract gear after takeoff. Use rudder to steer while rolling on the runway;
         use the ailerons to bank once airborne. Low speed or excessive pitch can stall.
         Land aligned with the runway, gear down, with a gentle descent.
@@ -228,12 +255,12 @@
         <dt>Pause / stats</dt><dd>P / F3; M sound, F fullscreen</dd>
         <dt>Controller</dt><dd>Left stick X banks, Y pitches; right stick X rudder; RT/LT set throttle; A afterburner; X airbrake; left-stick click gear</dd>
         <dt>Touch</dt><dd>Left pad banks and pitches (drag up to raise the nose). Tap or hold PWR +/&minus; to set throttle. Hold BURN or slide up from PWR + for afterburner; release to stop it.</dd></dl>
-      <button id="flight-air-start" type="button" class="secondary">AIR START / FLIGHT PRACTICE</button>
+      <button id="flight-air-start" type="button" class="secondary non-training-flight">AIR START / FLIGHT PRACTICE</button>
       <button id="flight-gear-button" type="button" class="secondary">GEAR DOWN / G</button>
       <button id="flight-carrier-start" type="button" class="secondary original-flight-only">CARRIER START / ORIGINAL CATAPULT</button>
       <button id="flight-landmark-tour" type="button" class="secondary original-flight-only">LANDMARK TOUR / ORIGINAL BRIDGE SCENERY</button>
       <button id="flight-hook-button" type="button" class="secondary original-flight-only">ARRESTOR HOOK / K</button>
-      <p class="small authored-flight-only traditional-flight-only">Modern flight uses newly authored jet aerodynamics and scenery.
+      <p class="small authored-flight-only traditional-flight-only non-training-flight">Modern flight uses newly authored jet aerodynamics and scenery.
         Choose the Amiga original model below to use your disk's actual flight tables, contact geometry and world.</p>
       <p class="small original-flight-only">Original mode runs the recovered Amiga player rules with verified
         data from the supplied disk. The reference clock is eight steps per second; enhanced WebGL rendering
@@ -243,11 +270,22 @@
         The source world includes decoded bridge spans, ground patterns and city structures.
         Moving service vehicles, walking ground crew and ambient air traffic are newly authored
         world enhancements, not a claim that original combat/mission AI has been ported.</p>
+      <div class="training-flight-only">
+        <h3>COPPERCLOUD RANGE / FLIGHT TRAINING</h3>
+        <p>Launch airborne on a course toward the moving drone and the ground beacon. Stay near your initial heading
+          for a first pass. When the dashboard says a prop is in range, press <kbd>T</kbd>, click or tap <strong>SCAN</strong>,
+          or click the right stick. Scans are proximity-only; keep flying and wait for the scanner to recharge.
+          Tag both once to clear the range. Garage or Restart starts a fresh attempt.</p>
+      </div>
       <div class="world-flight-only">
         <h3>WORLD FLIGHT / SELECT A DEPARTURE</h3>
         <select id="world-departure" aria-label="World Flight departure" disabled></select>
+        <p id="world-aircraft-brief" class="small"></p>
         <p class="small">For supersonic flight, raise throttle to 100%, retract the gear (G), and hold Space
           for afterburner. Try the Cascades high-altitude cruise departure for a fast start.</p>
+        <p class="small"><strong>Labels</strong> shows names above visible landmarks. <strong>Map Roads</strong>
+          changes the tint, not the coverage, of mapped streets and is offered only where road data is present.
+          Neither setting changes the flight HUD.</p>
         <p class="small">Seattle and San Francisco have mapped buildings; Rainier, Yosemite and Grand Canyon
           have finer terrain. Fly the lower 48 as one region, or choose Alaska or Hawaii.
           Scenic departures start airborne; Boeing Field is the modeled landing strip.
@@ -262,7 +300,7 @@
       <label class="racing-only">VEHICLE BODY / SHARED DRIVING PHYSICS<select id="vehicle-style"></select></label>
       <label>GRAPHICS<select id="graphics-quality"><option value="high">High fidelity</option><option value="balanced">Balanced / lower GPU load</option></select></label>
       <label>PHYSICS MODEL<select id="physics-mode" disabled><option value="modern">Modern / responsive (default)</option><option id="classic-option" value="classic" disabled>Classic / Amiga-derived reference</option><option id="flight-original-option" value="flight-original" hidden disabled>Amiga F/A-18 / verified disk data</option></select></label>
-      <label>GAME MODE<select id="session-mode" disabled><option value="time-attack">Time attack / best lap</option><option value="race">Head-to-head / AI rival</option><option value="checkpoint-run">Checkpoint run / timed gates</option><option value="free-roam">City Cruise / open-world driving</option><option value="city-blitz">City Blitz / checkpoint rush</option><option value="city-circuit">City Circuit / street race</option><option value="hard-driving">Hard Drivin' / proving ground</option><option value="stunts">Stunts / loop &amp; jump park</option><option value="flight">Flight / modern jet</option><option value="flight-original" disabled>Flight / Amiga original model</option><option value="flight-world" disabled>World Flight / United States</option></select></label>
+      <label>GAME MODE<select id="session-mode" disabled><option value="time-attack">Time attack / best lap</option><option value="race">Head-to-head / AI rival</option><option value="checkpoint-run">Checkpoint run / timed gates</option><option value="free-roam">City Cruise / open-world driving</option><option value="city-blitz">City Blitz / checkpoint rush</option><option value="city-circuit">City Circuit / street race</option><option value="seattle-drive" disabled>Seattle Scenic Drive / offline GPS</option><option value="hard-driving">Hard Drivin' / proving ground</option><option value="stunts">Stunts / loop &amp; jump park</option><option value="flight">Flight / modern jet</option><option value="flight-training">Flight Training / drone &amp; beacon</option><option value="flight-original" disabled>Flight / Amiga original model</option><option value="flight-world" disabled>World Flight / United States</option></select></label>
       <label>ON-SCREEN TOUCH CONTROLS<select id="touch-mode"><option value="auto">Auto / detect touchscreen</option><option value="on">On / phone or tablet controls</option><option value="off">Off / keyboard or controller</option></select></label>
       <label>TRACK<select id="session-track" disabled></select></label>
       <label>BEST-LAP GHOST / TIME ATTACK<select id="ghost-mode" disabled><option value="on">On / record and replay clean best lap</option><option value="off">Off / hide ghost</option></select></label>

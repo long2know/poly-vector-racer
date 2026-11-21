@@ -12,9 +12,14 @@ out vec4 shadowPosition;
 flat out float surfaceMaterial;
 #ifdef FLIGHT_DEPTH
 out float viewDepth;
+uniform vec3 roadLowering;
 #endif
 void main() {
   vec4 world = model * vec4(position,1.0);
+#ifdef FLIGHT_DEPTH
+  // Surface roads are 6–8; bridge materials 9–11 retain their deck heights.
+  if(material>5.5&&material<8.5) world.y-=roadLowering[int(material)-6];
+#endif
   worldPosition=world.xyz; worldNormal=mat3(model)*normal;
   surfaceColor=color; surfaceMaterial=material;
   shadowPosition=lightProjection*world;
@@ -32,7 +37,7 @@ flat in float surfaceMaterial;
 uniform vec3 eye, sun;
 uniform sampler2D shadowMap;
 uniform float shadowTexel, opacity, fogDistance, worldTime;
-uniform bool softShadows;
+uniform bool softShadows, mapRoads;
 out vec4 pixel;
 #ifdef FLIGHT_DEPTH
 in float viewDepth;
@@ -59,13 +64,18 @@ void main() {
   gl_FragDepth=log2(1.0+viewDepth)*logDepthScale;
 #endif
   vec3 n=normalize(worldNormal), base=surfaceColor;
-  bool water=surfaceMaterial>4.5;
+  bool water=surfaceMaterial>4.5&&surfaceMaterial<5.5;
+  bool road=surfaceMaterial>5.5;
   if(water) {
     float a=worldPosition.x*.021+worldTime*.7, b=worldPosition.z*.017-worldTime*.5;
     n=normalize(n+vec3(cos(a)*.045,0.0,sin(b)*.045));
     base*=.94+.045*sin(a+b);
   }
-  if(surfaceMaterial>.5&&surfaceMaterial<1.5) {
+  if(road&&mapRoads) {
+    float kind=mod(surfaceMaterial-6.0,3.0);
+    base=kind<.5?vec3(.17,.48,.8):kind<1.5?vec3(.94,.59,.22):vec3(.83,.86,.79);
+  }
+  if(road||(surfaceMaterial>.5&&surfaceMaterial<1.5)) {
     float grain=hash(floor(worldPosition.xz*31.0));
     float detail=1.0-smoothstep(.025,.12,length(fwidth(worldPosition.xz)));
     base*=.98+(grain-.5)*.12*detail;
@@ -168,8 +178,24 @@ export class Geometry {
   }
 }
 
+function compactVertices(vertices) {
+  // Keep the 12-byte position unchanged; the rest of the stride is lighting data and padding.
+  const buffer = new ArrayBuffer(vertices.length / 10 * 24);
+  const positions = new Float32Array(buffer), normals = new Int16Array(buffer), bytes = new Uint8Array(buffer);
+  for (let i = 0, j = 0; i < vertices.length; i += 10, j += 24) {
+    for (let k = 0; k < 3; k++) {
+      positions[j / 4 + k] = vertices[i + k];
+      normals[j / 2 + 6 + k] = Math.round(vertices[i + 3 + k] * 32767);
+      bytes[j + 18 + k] = Math.round(vertices[i + 6 + k] * 255);
+    }
+    bytes[j + 21] = vertices[i + 9];
+  }
+  return buffer;
+}
+
 export class Graphics {
   meshes = new Set();
+  meshBytes = 0;
   completedFrames = 0;
   submittedFrames = 0;
   skippedFrames = 0;
@@ -185,7 +211,7 @@ export class Graphics {
     if (!gl) throw new Error('WebGL2 is required. Enable hardware acceleration or use a WebGL2-capable browser.');
     this.gl = gl;
     const uniforms = ['model', 'viewProjection', 'lightProjection', 'eye', 'sun', 'shadowMap', 'shadowTexel',
-      'softShadows', 'opacity', 'fogDistance', 'worldTime', 'logDepthScale'];
+      'softShadows', 'opacity', 'fogDistance', 'worldTime', 'logDepthScale', 'mapRoads', 'roadLowering'];
     this.scene = program(gl, vertex, fragment, uniforms);
     this.flightScene = program(gl, vertex, fragment, uniforms, 'FLIGHT_DEPTH');
     this.depth = program(gl, shadowVertex, shadowFragment, ['model', 'lightProjection']);
@@ -194,7 +220,6 @@ export class Graphics {
     this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
     this.device = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
-    this.createShadow(2048);
   }
 
   createShadow(size) {
@@ -223,6 +248,7 @@ export class Graphics {
 
   setQuality(quality) {
     if (quality !== 'high' && quality !== 'balanced') throw new Error(`Unknown graphics quality: ${quality}`);
+    if (this.quality === quality && this.shadowBuffer) return;
     this.quality = quality;
     this.createShadow(quality === 'high' ? 2048 : 1024);
   }
@@ -231,22 +257,28 @@ export class Graphics {
     return this.pending.length;
   }
 
-  mesh(geometry) {
+  mesh(geometry, compact = false) {
     const gl = this.gl, vao = gl.createVertexArray(), buffer = gl.createBuffer();
+    const data = compact ? compactVertices(geometry.vertices) : new Float32Array(geometry.vertices);
+    const attributes = compact ? [
+      [3, gl.FLOAT, false, 0], [3, gl.SHORT, true, 12], [3, gl.UNSIGNED_BYTE, true, 18], [1, gl.UNSIGNED_BYTE, false, 21],
+    ] : [[3, gl.FLOAT, false, 0], [3, gl.FLOAT, false, 12], [3, gl.FLOAT, false, 24], [1, gl.FLOAT, false, 36]];
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry.vertices), gl.STATIC_DRAW);
-    for (const [location, count, offset] of [[0, 3, 0], [1, 3, 12], [2, 3, 24], [3, 1, 36]]) {
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    for (const [location, [count, type, normalized, offset]] of attributes.entries()) {
       gl.enableVertexAttribArray(location);
-      gl.vertexAttribPointer(location, count, gl.FLOAT, false, 40, offset);
+      gl.vertexAttribPointer(location, count, type, normalized, compact ? 24 : 40, offset);
     }
-    const mesh = { vao, buffer, count: geometry.vertices.length / 10 };
+    const mesh = { vao, buffer, count: geometry.vertices.length / 10, bytes: data.byteLength };
     this.meshes.add(mesh);
+    this.meshBytes += mesh.bytes;
     return mesh;
   }
 
   releaseMesh(mesh) {
     if (!this.meshes.delete(mesh)) return;
+    this.meshBytes -= mesh.bytes;
     this.gl.deleteBuffer(mesh.buffer);
     this.gl.deleteVertexArray(mesh.vao);
   }
@@ -285,6 +317,7 @@ export class Graphics {
       this.skippedFrames++;
       return false;
     }
+    if (!this.shadowBuffer) this.setQuality(this.quality);
     const gl = this.gl, rect = this.canvas.getBoundingClientRect();
     const dpr = Math.min(globalThis.devicePixelRatio || 1, this.quality === 'high' ? 1.75 : 1);
     const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
@@ -342,6 +375,8 @@ export class Graphics {
     gl.uniformMatrix4fv(u.viewProjection, false, multiply(
       perspective(camera.fov, width / height, 0.12, far), view));
     gl.uniform1f(u.logDepthScale, 1 / Math.log2(1 + far));
+    gl.uniform1i(u.mapRoads, camera.mapRoads ? 1 : 0);
+    gl.uniform3fv(u.roadLowering, camera.roadLowering ?? [0, 0, 0]);
     gl.uniformMatrix4fv(u.lightProjection, false, light);
     gl.uniform3fv(u.eye, camera.eye);
     gl.uniform3fv(u.sun, this.sun);
@@ -393,8 +428,8 @@ export class Graphics {
     this.query = null;
     for (const mesh of this.meshes) this.releaseMesh(mesh);
     for (const p of [this.scene, this.flightScene, this.depth, this.sky]) gl.deleteProgram(p.handle);
-    gl.deleteTexture(this.shadowTexture);
-    gl.deleteFramebuffer(this.shadowBuffer);
+    if (this.shadowTexture) gl.deleteTexture(this.shadowTexture);
+    if (this.shadowBuffer) gl.deleteFramebuffer(this.shadowBuffer);
     gl.deleteVertexArray(this.emptyVao);
   }
 }

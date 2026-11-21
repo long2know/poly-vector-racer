@@ -3,9 +3,12 @@ import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { verifySeattleDrive } from './seattle-drive.mjs';
 
 const base = new URL(process.env.STUNT_URL ?? 'http://127.0.0.1:5188/stunt-car-racer/');
 const focus = process.env.STUNT_BROWSER_FOCUS;
+const seattleFocus = /^seattle-drive(?:-legacy|-no-package)?$/.test(focus ?? '');
+const geographicSpeedFocus = focus === 'world-flight-speed';
 const artifactRoot = resolve('artifacts/browser');
 await mkdir(artifactRoot, { recursive: true });
 const output = await mkdtemp(resolve(artifactRoot, 'run-'));
@@ -268,9 +271,27 @@ async function bankFlight(code, direction) {
   } finally { await key(code, false); }
 }
 
-async function orbitFlightWithPointer(touch) {
-  const start = await evaluate('({x:innerWidth*.56,y:innerHeight*.64})');
-  const end = { x: start.x + 110, y: start.y - 78 };
+async function traceFlightPointer() {
+  await evaluate(`(() => {
+    const canvas = document.querySelector("#game"), events = [], controller = new AbortController();
+    window.__qualificationPointerTrace = { events, controller };
+    for (const type of ["pointerdown", "gotpointercapture", "pointermove", "pointerup", "pointercancel", "lostpointercapture"]) {
+      window.addEventListener(type, event => {
+        events.push({ type, target: event.target.id, pointerId: event.pointerId, pointerType: event.pointerType,
+          trusted: event.isTrusted, x: event.clientX, y: event.clientY, buttons: event.buttons,
+          captured: canvas.hasPointerCapture(event.pointerId), coalesced: event.getCoalescedEvents?.().length ?? 0,
+          orbiting: canvas.classList.contains("orbiting"), view: document.body.dataset.flightView
+        });
+      }, { signal: controller.signal });
+    }
+  })()`);
+}
+
+async function holdFlightPointerOrbit(touch, onOrbit) {
+  const start = await evaluate(`(() => {
+    const r = document.querySelector("#game").getBoundingClientRect();
+    return { x: Math.round(r.left + r.width*.56), y: Math.round(r.top + r.height*.64) };
+  })()`);
   const dragging = 'document.querySelector("#game").classList.contains("orbiting")';
   const aircraftRelativeOrbit = `(() => {
     const pose=${flightViewExpression('orbit')};
@@ -280,28 +301,59 @@ async function orbitFlightWithPointer(touch) {
     return dx*Math.cos(yaw)-dz*Math.sin(yaw)>8 && dy>12 && pose;
   })()`;
   let pressed = false;
+  let point = start;
+  const mouse = (type, where, button, buttons, clickCount = 0) => cdp.call('Input.dispatchMouseEvent', {
+    type, ...where, button, buttons, clickCount, pointerType: 'mouse',
+  });
   const release = async () => {
     if (!pressed) return;
     if (touch) await cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    else await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...end, button: 'left', buttons: 0, clickCount: 1 });
+    else await mouse('mouseReleased', point, 'left', 0, 1);
     pressed = false;
   };
-  let orbit;
+  await traceFlightPointer();
+  let orbit, trace;
   try {
     orbit = await flightInput(async () => {
       await release();
-      if (!touch) await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...start, buttons: 0 });
+      point = start;
+      if (!touch) await mouse('mouseMoved', start, 'none', 0);
       assert.equal(await evaluate(`document.elementFromPoint(${start.x}, ${start.y})?.id`), 'game', 'orbit must start on the canvas');
       if (touch) await cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...start, id: 32 }] });
-      else await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...start, button: 'left', buttons: 1, clickCount: 1 });
+      else await mouse('mousePressed', start, 'left', 1, 1);
       pressed = true;
       await waitFor(`${dragging} || stuntRacer.observe().phase !== "racing"`, 4000);
       if (!await evaluate(dragging)) return;
-      if (touch) await cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...end, id: 32 }] });
-      else await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...end, buttons: 1 });
+      for (let step = 1; step <= 5; step++) {
+        point = { x: start.x + 22 * step, y: start.y - Math.round(78 * step / 5) };
+        if (touch) await cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...point, id: 32 }] });
+        else await mouse('mouseMoved', point, 'none', 1);
+        await sleep(32);
+      }
     }, `${dragging} && ${aircraftRelativeOrbit}`);
-  } finally { await release(); }
+    await onOrbit?.();
+  } finally {
+    await release();
+    trace = await evaluate(`(() => {
+      const { events, controller } = window.__qualificationPointerTrace;
+      controller.abort();
+      delete window.__qualificationPointerTrace;
+      return events;
+    })()`);
+    (evidence.flightPointerTraces ??= []).push({ touch, events: trace });
+  }
+  const down = trace.findLast(event => event.type === 'pointerdown' && event.target === 'game');
+  assert.ok(down?.trusted && down.pointerType === (touch ? 'touch' : 'mouse'), 'trusted pointerdown must reach the canvas');
+  const heldMoves = trace.slice(trace.lastIndexOf(down)).filter(event => event.type === 'pointermove' &&
+    event.pointerId === down.pointerId && event.target === 'game' && event.trusted && event.orbiting &&
+    (event.buttons & 1) && (event.x !== down.x || event.y !== down.y));
+  assert.ok(heldMoves.length >= 2, 'the canvas must receive several trusted held pointer moves');
   await waitFor(`!(${dragging})`, 4000);
+  return orbit;
+}
+
+async function orbitFlightWithPointer(touch) {
+  const orbit = await holdFlightPointerOrbit(touch);
   const centered = await flightView('forward', () => touch ? touchTap('flight-view-reset') : click('flight-view-reset'));
   const { x: cx, z: cz, yaw: heading } = centered.aircraft;
   const ahead = (centered.camera.eye[0] - cx) * Math.sin(heading) + (centered.camera.eye[2] - cz) * Math.cos(heading);
@@ -328,19 +380,13 @@ async function verifyFlightThrottle() {
   await flightInput(null, `Math.abs(${flightAircraft}.throttle - ${lowered / 100}) < .035`);
   assert.equal(await evaluate(throttleSetting), lowered, 'LT release retains the lowered setting');
   await flightView('forward');
-  const drag = await evaluate('({x:innerWidth*.46,y:innerHeight*.54})');
-  assert.equal(await evaluate(`document.elementFromPoint(${drag.x}, ${drag.y})?.id`), 'game');
-  await flightView('orbit', async () => {
-    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...drag, button: 'left', buttons: 0, clickCount: 1 });
-    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...drag, button: 'left', buttons: 1, clickCount: 1 });
-    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: drag.x + 85, y: drag.y, buttons: 1 });
+  await holdFlightPointerOrbit(false, async () => {
+    await evaluate('window.__qualificationPad.buttons[7]={pressed:true,value:1}; window.dispatchEvent(new Event("blur"))');
+    await waitFor('stuntRacer.observe().phase === "paused"');
+    assert.equal(await evaluate('document.querySelector("#game").classList.contains("orbiting")'), false, 'blur ends a held orbit drag');
   });
-  await evaluate('window.__qualificationPad.buttons[7]={pressed:true,value:1}; window.dispatchEvent(new Event("blur"))');
-  await waitFor('stuntRacer.observe().phase === "paused"');
   const paused = (await observe()).flight;
   assert.equal(await evaluate(throttleSetting), lowered, 'blur preserves the deliberate power setting');
-  assert.equal(await evaluate('document.querySelector("#game").classList.contains("orbiting")'), false, 'blur ends a held orbit drag');
-  await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...drag, button: 'left', buttons: 0, clickCount: 1 });
   await click('resume-button');
   await waitFor('stuntRacer.observe().phase === "racing"');
   await flightView('forward');
@@ -669,6 +715,7 @@ async function verifyGeographicFlight() {
   await click('world-flight-button');
   await waitFor(`${world}?.destination === "boeing" && ${world}.finest >= 7`, 45000);
   const runway = await observe();
+  assert.equal((await evaluate('stuntRacer.diagnostics()')).worldAircraft.id, 'f18');
   assert.equal(runway.flight.aircraft.onGround, true);
   assert.ok(Math.abs(runway.flight.aircraft.y - 8.8) < .02, 'Boeing Field has real runway elevation');
   assert.match(await evaluate('document.querySelector("#start-label").textContent'), /BOEING FIELD/);
@@ -788,6 +835,227 @@ async function verifyGeographicFlight() {
   }
   await chooseExperienceMode('time-attack');
   evidence.geographicFlight = { seattle, looks, orbit, rainier, alaska, hawaii, runwayAltitude: runway.flight.aircraft.y, expanded };
+}
+
+async function setFlightPhone(enabled) {
+  if (enabled) {
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width: 360, height: 800, deviceScaleFactor: 1, mobile: true });
+    await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await select('touch-mode', 'on');
+  } else {
+    await select('touch-mode', 'off');
+    await cdp.call('Emulation.clearDeviceMetricsOverride');
+    await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: false });
+  }
+}
+
+async function verifyTouchTargets(ids) {
+  const targets = await evaluate(`${JSON.stringify(ids)}.map(id => {
+    const element = document.getElementById(id), r = element.getBoundingClientRect();
+    return {id, width:r.width, height:r.height, left:r.left, right:r.right, top:r.top, bottom:r.bottom,
+      inside:r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
+      reachable: document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest("button") === element};
+  })`);
+  for (const rect of targets)
+    assert.ok(rect.width >= 44 && rect.height >= 44 && rect.inside && rect.reachable,
+      `${rect.id} must be a reachable phone target (${JSON.stringify(rect)})`);
+  for (const [i, a] of targets.entries())
+    for (const b of targets.slice(i + 1))
+      assert.ok(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom,
+        `${a.id} must not overlap ${b.id}`);
+  return targets;
+}
+
+async function verifyFlightTraining() {
+  const range = 'stuntRacer.observe().flight.training';
+  await chooseExperienceMode('flight-training');
+  const initial = await evaluate(range);
+  const drone = initial.props.find(prop => prop.kind === 'drone');
+  const beacon = initial.props.find(prop => prop.kind === 'beacon');
+  assert.ok(drone && beacon);
+  assert.equal(await evaluate('Boolean(stuntRacer.world().geography || stuntRacer.world().sourceWorld)'), false);
+  await tap('KeyT');
+  assert.deepEqual(await evaluate(range), initial, 'the ready range does not accept a scan');
+  await screenshot('70-flight-training-briefing.png');
+  await click('start-button');
+  await driveUntil(`${range}.inRangeId === ${JSON.stringify(drone.id)}`, 15000);
+  const near = (await observe()).flight;
+  assert.equal(near.aircraft.onGround, false);
+  assert.notDeepEqual(near.training.props.find(prop => prop.id === drone.id).position, drone.position);
+  assert.deepEqual(near.training.props.find(prop => prop.id === beacon.id).position, beacon.position);
+  await tap('KeyP');
+  await waitFor('stuntRacer.observe().phase === "paused"');
+  const paused = (await observe()).flight;
+  await tap('KeyT');
+  await sleep(220);
+  assert.deepEqual((await observe()).flight, paused, 'pause blocks scans and freezes drone motion and countdown');
+  await click('resume-button');
+  await flightInput(() => tap('KeyT'), `${range}.score === 1`);
+  const firstScan = await evaluate(range);
+  assert.ok(firstScan.props.find(prop => prop.id === drone.id).tagged);
+  assert.equal(firstScan.props.find(prop => prop.id === beacon.id).tagged, false);
+  assert.match(await evaluate('document.querySelector("#training-score").textContent'), /1 TAGGED \/ 1 LEFT/);
+  await screenshot('71-flight-training-drone-tagged.png');
+
+  await tap('KeyP');
+  await waitFor('stuntRacer.observe().phase === "paused"');
+  await setFlightPhone(true);
+  await touchTap('resume-button');
+  await waitFor('stuntRacer.observe().phase === "racing"');
+  const scanLayout = await verifyTouchTargets(['training-scan-button', 'flight-view-reset']);
+  await driveUntil(`${range}.inRangeId === ${JSON.stringify(beacon.id)} && ${range}.cooldownSeconds === 0`, 15000);
+  await screenshot('72-flight-training-touch-scan.png');
+  await touchTap('training-scan-button');
+  await waitFor('stuntRacer.observe().phase === "finished"');
+  const clear = (await observe()).flight;
+  assert.equal(clear.aircraft.crashed, false);
+  assert.equal(clear.training.score, 2);
+  assert.ok(clear.training.props.find(prop => prop.id === beacon.id).tagged);
+  assert.match(await evaluate('document.querySelector("#finish-title").textContent'), /RANGE CLEAR/);
+  await screenshot('73-flight-training-clear.png');
+  await touchTap('again-button');
+  await waitFor(`stuntRacer.observe().phase === "racing" && ${range}.score === 0`);
+  assert.equal((await observe()).flight.aircraft.onGround, false);
+  await touchTap('garage-button');
+  await waitFor(`stuntRacer.observe().phase === "ready" && ${range}.remaining === 2`);
+  await setFlightPhone(false);
+
+  await chooseExperienceMode('flight');
+  await click('air-start-button');
+  await driveUntil('stuntRacer.observe().phase === "racing"', 10000);
+  await tap('KeyT');
+  assert.equal((await observe()).flight.training, undefined);
+  assert.equal(await evaluate('document.querySelector("#training-scan-button").hidden'), true);
+  assert.equal(await evaluate('stuntRacer.diagnostics().failed'), false);
+  await click('garage-button');
+  await chooseExperienceMode('time-attack');
+  evidence.flightTraining = { firstScan, clear, scanLayout };
+}
+
+async function verifyWorldFlightSettings() {
+  if (!await evaluate('stuntRacer.diagnostics().worldFlightConfigurationAvailable')) {
+    assert.notEqual(focus, 'world-flight-settings', 'World Flight settings require the hosted terrain ZIP.');
+    return;
+  }
+  const world = 'stuntRacer.diagnostics().geographicFlight';
+  const aircraft = 'stuntRacer.diagnostics().worldAircraft';
+  const labels = 'stuntRacer.diagnostics().landmarkLabels';
+  const depart = async id => {
+    await select('world-departure-menu', id);
+    await waitFor(`${world}?.destination === ${JSON.stringify(id)} && stuntRacer.diagnostics().ready`, 45000);
+  };
+  await click('world-flight-button');
+  await waitFor(`${world} && stuntRacer.diagnostics().ready`, 45000);
+  await depart('seattle');
+  const f18 = await evaluate(aircraft);
+  assert.equal(f18.id, 'f18');
+  assert.deepEqual(await evaluate('Array.from(document.querySelector("#world-aircraft-menu").options, option => option.value)'),
+    ['f18', 'f14', 'f15', 'sr71']);
+  assert.equal(await evaluate(`${labels}.enabled`), false);
+  await select('world-aircraft-menu', 'f15');
+  await waitFor(`${aircraft}.id === "f15" && stuntRacer.diagnostics().ready`, 45000);
+  const f15 = await evaluate(aircraft);
+  assert.ok(f15.maximumMach > f18.maximumMach);
+  assert.equal(await evaluate(`${world}.renderedAircraftId`), 'f15');
+  await waitFor(`${world}.roadMeshes > 0`, 45000);
+  assert.equal(await evaluate(`${world}.roadStyle`), 'terrain');
+  await screenshot('74-world-flight-aircraft-garage.png');
+
+  if ((await evaluate('stuntRacer.diagnostics()')).camera !== 'chase') await tap('KeyC');
+  await click('air-start-button');
+  await driveUntil('stuntRacer.observe().phase === "racing"', 12000);
+  assert.equal(await evaluate('document.querySelector("#world-aircraft-menu").disabled'), true);
+  await select('world-aircraft-menu', 'f14');
+  assert.equal(await evaluate(`${aircraft}.id`), 'f15', 'changing a disabled control must not reset a live flight');
+  await flightInput(() => click('world-label-button'), `${labels}.visible.includes("Space Needle")`);
+  const names = await evaluate(`${labels}.visible`);
+  assert.ok(names.length <= 6 && new Set(names).size === names.length);
+  assert.equal(await evaluate(`(() => {
+    const rects = [...document.querySelectorAll(".flight-landmark-label:not([hidden])")].map(e=>e.getBoundingClientRect());
+    return rects.every((a,i)=>a.left>=0 && a.top>=0 && a.right<=innerWidth && a.bottom<=innerHeight &&
+      rects.slice(i+1).every(b=>a.right<=b.left || a.left>=b.right || a.bottom<=b.top || a.top>=b.bottom));
+  })()`), true, 'on-screen landmark names are in bounds and do not overlap');
+  await flightInput(() => tap('KeyV'), `!stuntRacer.diagnostics().flightHud && ${labels}.visible.includes("Space Needle")`);
+  await screenshot('75-world-flight-landmark-labels.png');
+  await flightView('rear', () => tap('Digit2'));
+  await flightInput(null, `${labels}.visible.length === 0`);
+  await flightView('forward', () => tap('Digit5'));
+  await flightInput(() => click('world-road-button'), `${world}.roadStyle === "map" && ${world}.roadMeshes > 0`);
+  const mapRoads = await evaluate(world);
+  await screenshot('76-world-flight-map-roads.png');
+  await flightInput(() => click('world-label-button'), `!${labels}.enabled && document.querySelector("#flight-landmark-labels").hidden`);
+  await flightInput(() => click('world-road-button'), `${world}.roadStyle === "terrain" && ${world}.roadMeshes > 0`);
+  await tap('KeyV');
+
+  await click('garage-button');
+  await waitFor('stuntRacer.observe().phase === "ready"');
+  await setFlightPhone(true);
+  await touchTap('air-start-button');
+  await driveUntil('stuntRacer.observe().phase === "racing"', 12000);
+  await selectFlightCamera('cockpit', true);
+  const sceneryLayout = await verifyTouchTargets(['flight-look-left', 'flight-view-reset', 'flight-look-rear',
+    'flight-look-right', 'world-label-button', 'world-road-button']);
+  await flightInput(() => touchTap('world-label-button'), `${labels}.enabled`);
+  await flightInput(() => touchTap('world-road-button'), `${world}.roadStyle === "map"`);
+  await screenshot('77-world-flight-touch-scenery.png');
+  await touchTap('garage-button');
+  await waitFor('stuntRacer.observe().phase === "ready"');
+  await setFlightPhone(false);
+  await select('world-aircraft-menu', 'sr71');
+  await waitFor(`${aircraft}.id === "sr71" && stuntRacer.diagnostics().ready`, 45000);
+  await depart('cruise');
+  const sr71 = await evaluate(aircraft);
+  assert.ok(sr71.maximumMach > f15.maximumMach);
+  assert.equal(await evaluate(`${world}.renderedAircraftId`), 'sr71', 'the new departure keeps the selected airframe');
+  assert.match(await evaluate('document.querySelector("#menu-intro").textContent'), /high-altitude cruise.*afterburner/);
+  assert.ok((await observe()).flight.aircraft.y > 8000);
+  await depart('denali');
+  assert.equal(await evaluate(`${aircraft}.id`), 'sr71');
+  await click('air-start-button');
+  await driveUntil('stuntRacer.observe().phase === "racing"', 12000);
+  await tap('KeyT');
+  assert.equal(await evaluate('document.querySelector("#world-road-button").hidden && document.querySelector("#world-road-button").disabled'), true);
+  assert.equal(await evaluate(`${world}.roadMeshes`), 0);
+  assert.equal((await observe()).flight.training, undefined, 'World Flight has no scanner or practice props');
+  assert.equal(await evaluate('stuntRacer.diagnostics().failed'), false);
+  await click('garage-button');
+  await chooseExperienceMode('time-attack');
+  evidence.worldFlightSettings = { f18, f15, sr71, names, mapRoads, sceneryLayout };
+}
+
+async function verifyWorldFlightSpeed() {
+  const diagnostics = 'stuntRacer.diagnostics()';
+  const world = `${diagnostics}.geographicFlight`;
+  assert.equal(await evaluate(`${diagnostics}.worldFlightConfigurationAvailable`), true, 'World Flight speed requires the hosted terrain ZIP.');
+  await click('world-flight-button');
+  await waitFor(`${world} && ${diagnostics}.ready`, 45000);
+  await select('world-departure-menu', 'cruise');
+  await waitFor(`${world}?.destination === 'cruise' && ${diagnostics}.ready`, 45000);
+  await select('world-aircraft-menu', 'sr71');
+  await waitFor(`${world}?.destination === 'cruise' && ${world}.renderedAircraftId === 'sr71' &&
+    ${diagnostics}.worldAircraft.id === 'sr71' && ${diagnostics}.ready`, 45000);
+  const airframe = await evaluate(`${diagnostics}.worldAircraft`);
+  assert.ok((await observe()).flight.aircraft.y > 8000);
+  await click('air-start-button');
+  await driveUntil('stuntRacer.observe().phase === "racing"', 12000);
+  const cruise = (await observe()).flight.aircraft;
+  const displacement = `Math.hypot(${flightAircraft}.x - ${JSON.stringify(cruise.x)},
+    ${flightAircraft}.z - ${JSON.stringify(cruise.z)})`;
+  const power = [['Equal', '='], ['Space']];
+  let powered;
+  try {
+    for (const [code, value] of power) await key(code, true, value);
+    await driveUntil(`${flightAircraft}.afterburner && ${flightAircraft}.mach > 3.08
+      && ${displacement} > 8000 && !stuntRacer.observe().terrainWaiting`, 150000, power);
+    powered = await observe();
+  } finally {
+    for (const [code, value] of power) await key(code, false, value);
+  }
+  const fast = powered.flight.aircraft;
+  const kilometres = Math.hypot(fast.x - cruise.x, fast.z - cruise.z) / 1000;
+  assert.ok(fast.mach > 3.08 && kilometres > 8, 'the selected SR-71 reaches Mach 3 under public flight input');
+  await screenshot('78-world-flight-sr71-mach3.png');
+  evidence.worldFlightSpeed = { airframe, start: cruise, aircraft: fast, time: powered.time, kilometres };
 }
 
 async function verifyStuntsLoop(mode = 'stunts') {
@@ -998,6 +1266,27 @@ try {
   assert.match(await response.text(), /src="\.\/main\.js"/);
   const health = await (await fetch(new URL('/healthz', base))).json();
   assert.equal(health.status, 'ready');
+  if (focus === 'seattle-drive-legacy' || focus === 'seattle-drive-no-package') {
+    const legacy = focus === 'seattle-drive-legacy';
+    await cdp.call('Fetch.enable', { patterns: [{
+      urlPattern: legacy ? '*/world-flight/manifest.json' : '*/runtime-config.json', requestStage: 'Response',
+    }] });
+    cdp.on('Fetch.requestPaused', async ({ requestId }) => {
+      try {
+        const { body, base64Encoded } = await cdp.call('Fetch.getResponseBody', { requestId });
+        const data = JSON.parse(base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body);
+        if (legacy) delete data.regions.find(region => region.id === 'conus').roads;
+        else data.worldFlightUrl = null;
+        await cdp.call('Fetch.fulfillRequest', {
+          requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+          body: Buffer.from(JSON.stringify(data)).toString('base64'),
+        });
+      } catch (error) {
+        errors.push(error.message);
+        await cdp.call('Fetch.failRequest', { requestId, errorReason: 'Failed' });
+      }
+    });
+  }
   await cdp.call('Page.navigate', { url: base.href });
   await waitFor('Boolean(globalThis.stuntRacer?.diagnostics().ready || document.querySelector("#error-panel:not([hidden])"))', 120000);
   const errorMessage = await evaluate('document.querySelector("#error-panel").hidden ? "" : document.querySelector("#error-message").textContent');
@@ -1008,8 +1297,10 @@ try {
   assert.equal(await evaluate('document.querySelector("#track-select").disabled'), false);
   assert.equal(evidence.initial.mainAssembly, 'StuntRacer.Browser.dll');
   assert.equal(evidence.initial.runtime, '.NET 10 browser-WASM');
+  assert.equal(evidence.initial.vehicleStyle, 'ev6');
   assert.ok(evidence.initial.completedFrames > 0);
-  if (!['flight', 'original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight'].includes(focus)) {
+  if (!seattleFocus && !geographicSpeedFocus && !['flight', 'original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
+    'world-flight-settings', 'flight-training'].includes(focus)) {
   await tap('F3');
   await waitFor('!document.querySelector("#stats").hidden && /FPS.*GPU-completed/.test(document.querySelector("#stats").textContent)');
   await tap('F3');
@@ -1437,10 +1728,18 @@ try {
     await waitFor('stuntRacer.diagnostics().ready && stuntRacer.diagnostics().compatibility.trackData === "authored"');
   }
   }
-  if (!['flight', 'original-flight', 'geographic-flight'].includes(focus)) await verifyDrivingExperiences();
-  if (!['original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight'].includes(focus)) await verifyFlight();
-  if (!['experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight'].includes(focus)) await verifyOriginalFlight();
+  if (!seattleFocus && !geographicSpeedFocus && !['flight', 'original-flight', 'geographic-flight', 'world-flight-settings', 'flight-training'].includes(focus)) await verifyDrivingExperiences();
+  if (!seattleFocus && !geographicSpeedFocus && !['original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
+    'world-flight-settings', 'flight-training'].includes(focus)) await verifyFlight();
+  if (!seattleFocus && !geographicSpeedFocus && !['experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight', 'world-flight-settings',
+    'flight-training'].includes(focus)) await verifyOriginalFlight();
   if (!focus || focus === 'geographic-flight') await verifyGeographicFlight();
+  if (!focus || focus === 'flight-training') await verifyFlightTraining();
+  if (!focus || focus === 'world-flight-settings') await verifyWorldFlightSettings();
+  if (geographicSpeedFocus) await verifyWorldFlightSpeed();
+  if (!focus || seattleFocus) evidence.seattleDrive = await verifySeattleDrive({
+    focus, evaluate, waitFor, click, select, key, observe, driveUntil, screenshot,
+  });
   evidence.final = await evaluate('stuntRacer.diagnostics()');
   assert.deepEqual(failedRequests, [], 'all WASM and local assets must load at the actual base path');
   assert.deepEqual(unexpectedUploads, [], 'local geometry files must never be uploaded');

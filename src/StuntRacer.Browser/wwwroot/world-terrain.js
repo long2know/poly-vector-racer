@@ -1,4 +1,5 @@
 import { Builder } from './scene.js';
+import { ForestLayer } from './world-forest.js';
 
 const side = 33, stride = side - 1, numSamples = side * side;
 const spacing = Array.from({ length: 9 }, (_, i) => 8192 >> i);
@@ -10,10 +11,11 @@ const spanAt = level => spacing[level] * stride;
 const screenBand = [Infinity, 290000, 137000, 72000, 43000, 24000, 13000, 6800, 3800];
 const roadSize = 4 * 1024 * 1024, roadLimits = { features: 12000, points: 100000, tile: 5500, meshes: 96 };
 const roadStyles = Object.freeze({
-  freeway: { halfWidth: 10.4, lift: 1.24, colour: [.72, .61, .43] },
-  arterial: { halfWidth: 6.7, lift: .98, colour: [.53, .49, .40] },
-  local: { halfWidth: 4.15, lift: .73, colour: [.38, .41, .40] },
+  freeway: { halfWidth: 10.4, lift: 1.24, groundLift: .10, material: 6, colour: [.72, .61, .43] },
+  arterial: { halfWidth: 6.7, lift: .98, groundLift: .075, material: 7, colour: [.53, .49, .40] },
+  local: { halfWidth: 4.15, lift: .73, groundLift: .05, material: 8, colour: [.38, .41, .40] },
 });
+export const groundRoadLowering = Object.freeze(Object.values(roadStyles).map(style => style.lift - style.groundLift));
 
 function validRoadArea(area) {
   const b = area?.bounds;
@@ -90,6 +92,20 @@ function hit(tile, tx, tz) {
   const h = tile.heights, a = j * side + i, b = a + side, x = u - i, z = v - j;
   return x <= z ? (1 - z) * h[a] + (z - x) * h[b] + x * h[b + 1]
     : (1 - x) * h[a] + z * h[b + 1] + (x - z) * h[a + 1];
+}
+
+function forestGround(tile, x, z) {
+  const step = spacing[tile.level], span = spanAt(tile.level);
+  const u = (x - tile.x * span) / step, v = (z - tile.z * span) / step;
+  const i = Math.floor(u), j = Math.floor(v), a = j * side + i, b = a + side;
+  const h = tile.heights, wet = tile.water;
+  // Avoid mixed shoreline triangles as well as submerged ones.
+  if (wet[a] || wet[a + 1] || wet[b] || wet[b + 1]) return null;
+  const slope = u - i <= v - j ? Math.hypot(h[b + 1] - h[b], h[b] - h[a])
+    : Math.hypot(h[a + 1] - h[a], h[b + 1] - h[a + 1]);
+  if (slope > step * .50) return null;
+  const y = hit(tile, x, z);
+  return y >= 3 && y < 1670 ? y : null;
 }
 
 function roadIndex(data, area) {
@@ -191,7 +207,7 @@ function appendRoadMesh(mesh, tile, segments, start, end) {
           const a = raised[0], b = raised[i], c = raised[i + 1];
           const up = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
           if (Math.abs(up) > 1e-5)
-            mesh.triangle(a, ...(up > 0 ? [b, c] : [c, b]), style.colour, 1);
+            mesh.triangle(a, ...(up > 0 ? [b, c] : [c, b]), style.colour, style.material + (bridge ? 3 : 0));
         }
       }
     }
@@ -208,26 +224,37 @@ class SeattleRoadLayer {
     this.area = area;
   }
 
+  loadDocument(now = performance.now()) {
+    if (this.data) return Promise.resolve(this.data);
+    if (this.load) return this.load.promise;
+    if (now < this.retryAt) return Promise.reject(new Error(this.error));
+    const controller = new AbortController(), { signal } = controller;
+    const promise = fetchWorldJson(this.url, roadSize, signal).then(data => {
+      signal.throwIfAborted();
+      this.index = roadIndex(data, this.area);
+      this.error = null;
+      return this.data = data;
+    }).catch(error => {
+      if (!signal.aborted) {
+        this.error = `Seattle roads: ${error.message}`;
+        this.retryAt = performance.now() + 12000;
+      }
+      throw error;
+    }).finally(() => { if (this.load?.controller === controller) this.load = null; });
+    this.load = { promise, controller };
+    return promise;
+  }
+
   draw(graphics, visible, x, z, now) {
     const [west, south, east, north] = this.area.bounds;
     if (Math.hypot(Math.max(0, west - x, x - east), Math.max(0, south - z, z - north)) > 12000) {
       if (this.load || this.index || this.error) this.clear(graphics);
       return [];
     }
-    if (!this.index && !this.load && now >= this.retryAt) {
-      const load = new AbortController();
-      this.load = load;
-      fetchWorldJson(this.url, roadSize, load.signal).then(data => {
-        if (load.signal.aborted) return;
-        this.index = roadIndex(data, this.area);
-        this.error = null;
-      }).catch(error => {
-        if (load.signal.aborted) return;
-        this.error = `Seattle roads: ${error.message}`;
-        this.retryAt = performance.now() + 12000;
-      }).finally(() => { if (this.load === load) this.load = null; });
+    if (!this.index) {
+      if (!this.load && now >= this.retryAt) this.loadDocument(now).catch(() => {});
+      return [];
     }
-    if (!this.index) return [];
     if (this.visible !== visible) {
       const distance = tile => {
         const span = spanAt(tile.level);
@@ -259,7 +286,7 @@ class SeattleRoadLayer {
         if (performance.now() >= deadline) break;
       }
       if (job.next === segments.length) {
-        this.meshes.set(tile, job.mesh.vertices.length ? graphics.mesh(job.mesh) : null);
+        this.meshes.set(tile, job.mesh.vertices.length ? graphics.mesh(job.mesh, true) : null);
         this.job = null;
       }
     }
@@ -274,8 +301,8 @@ class SeattleRoadLayer {
   }
 
   clear(graphics) {
-    this.load?.abort();
-    this.load = this.index = this.error = this.visible = this.wanted = this.job = null;
+    this.load?.controller.abort();
+    this.load = this.data = this.index = this.error = this.visible = this.wanted = this.job = null;
     for (const mesh of this.meshes.values()) if (mesh) graphics.releaseMesh(mesh);
     this.meshes.clear();
     this.meshCount = this.retryAt = 0;
@@ -340,6 +367,7 @@ export class WorldTerrain {
     this.visible = [];
     this.rendered = new Map();
     this.roads = region.roads ? new SeattleRoadLayer(catalog, region.roads) : null;
+    this.forest = new ForestLayer(region);
     this.maxTiles = 512;
     this.epoch = 0;
   }
@@ -349,6 +377,7 @@ export class WorldTerrain {
     const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`Terrain tile ${level}/${x}/${z} returned HTTP ${response.status}.`);
     const tile = decodeTile(await response.arrayBuffer(), level, x, z);
+    signal?.throwIfAborted();
     const key = keyOf(level, x, z);
     this.loaded.set(key, tile);
     return tile;
@@ -385,12 +414,17 @@ export class WorldTerrain {
     return tile ? hit(tile, x, z) : null;
   }
 
-  visualSample(x, z, minimumLevel = 0) {
+  visualTileAt(x, z, minimumLevel = 0) {
     for (let level = this.region.coverage.length - 1; level >= minimumLevel; level--) {
       const span = spanAt(level), tile = this.rendered.get(keyOf(level, Math.floor(x / span), Math.floor(z / span)));
-      if (tile?.mesh) return hit(tile, x, z);
+      if (tile?.mesh) return tile;
     }
     return null;
+  }
+
+  visualSample(x, z, minimumLevel = 0) {
+    const tile = this.visualTileAt(x, z, minimumLevel);
+    return tile ? hit(tile, x, z) : null;
   }
 
   isWater(x, z) {
@@ -402,7 +436,12 @@ export class WorldTerrain {
     return tile.water[v * side + u] !== 0;
   }
 
-  attach(graphics) { this.graphics = graphics; }
+  attach(graphics, runways = []) {
+    this.graphics = graphics;
+    this.forest.setRunways(runways);
+  }
+
+  loadRoads() { return this.roads?.loadDocument() ?? Promise.resolve(null); }
 
   request(level, x, z, candidates) {
     const key = keyOf(level, x, z);
@@ -484,9 +523,9 @@ export class WorldTerrain {
         tile.used = this.epoch;
         this.errors.delete(task.key);
       }).catch(error => {
-        if (error.name !== 'AbortError')
+        if (!controller.signal.aborted && error.name !== 'AbortError')
           this.errors.set(task.key, { message: error.message, retryAt: performance.now() + 12000 });
-      }).finally(() => this.pending.delete(task.key));
+      }).finally(() => { if (this.pending.get(task.key) === controller) this.pending.delete(task.key); });
     }
     this.syncCollision(x, z);
     const visibleTiles = new Map(visible.map(tile => [keyOf(tile.level, tile.x, tile.z), tile]));
@@ -513,7 +552,7 @@ export class WorldTerrain {
         if (!key) continue;
         const seam = makeElevationSeam(tile, edge, neighbor);
         tile.seams ??= new Map();
-        tile.seams.set(edge, { key, mesh: seam.vertices.length ? this.graphics.mesh(seam) : null });
+        tile.seams.set(edge, { key, mesh: seam.vertices.length ? this.graphics.mesh(seam, true) : null });
       }
     }
     if (this.loaded.size > this.maxTiles) {
@@ -530,14 +569,16 @@ export class WorldTerrain {
   draw(x, z, far, balanced, now) {
     this.select(x, z, far, balanced, now);
     for (const tile of this.meshQueue.splice(0, 3))
-      tile.mesh = this.graphics.mesh(makeElevationMesh(tile));
+      tile.mesh = this.graphics.mesh(makeElevationMesh(tile), true);
     const terrain = this.visible.filter(tile => tile.mesh).flatMap(tile => {
       const span = spanAt(tile.level), x = tile.x * span, z = tile.z * span;
       const draw = { mesh: tile.mesh, offset: [x, 0, z], shadow: false };
       return [draw, ...[...(tile.seams?.values() ?? [])].filter(seam => seam.mesh)
         .map(seam => ({ ...draw, mesh: seam.mesh }))];
     });
-    return this.roads ? [...terrain, ...this.roads.draw(this.graphics, this.visible, x, z, now)] : terrain;
+    if (this.roads) terrain.push(...this.roads.draw(this.graphics, this.visible, x, z, now));
+    terrain.push(...this.forest.draw(this, x, z, balanced, forestGround));
+    return terrain;
   }
 
   get status() {
@@ -552,6 +593,21 @@ export class WorldTerrain {
     for (const controller of this.pending.values()) controller.abort();
     this.pending.clear();
     this.roads?.clear(this.graphics);
+    this.forest.clear(this.graphics);
+    const release = mesh => {
+      if (mesh && this.graphics && (this.graphics.meshes?.has(mesh) ?? true)) this.graphics.releaseMesh(mesh);
+    };
+    for (const tile of this.loaded.values()) {
+      release(tile.mesh);
+      for (const { mesh } of tile.seams?.values() ?? []) release(mesh);
+      delete tile.mesh;
+      delete tile.seams;
+    }
+    this.visible = [];
+    this.rendered.clear();
+    this.meshQueue = [];
+    this.nextUpdate = 0;
+    this.graphics = null;
   }
 }
 

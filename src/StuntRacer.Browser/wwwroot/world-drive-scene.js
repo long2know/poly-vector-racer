@@ -1,0 +1,77 @@
+import { RaceScene } from './scene.js';
+import { WorldScenery } from './world-flight-scene.js';
+import { WorldTerrain } from './world-terrain.js';
+
+export function seattleRegion(catalog) {
+  return catalog?.regions.find(region => region.id === 'conus' && region.roads?.id === 'seattle') ?? null;
+}
+
+export async function loadSeattleDrive(api, catalog) {
+  const region = seattleRegion(catalog);
+  if (!region) throw new Error('This World Flight package does not include Seattle road data.');
+  const area = JSON.parse(api.SeattleDriveAreaInfo());
+  const terrain = new WorldTerrain(catalog, region, { add() {}, remove() {} });
+  const controller = new AbortController();
+  try {
+    const [roads, tiles] = await Promise.all([
+      terrain.loadRoads(),
+      Promise.all(area.tiles.map(({ level, x, z }) => terrain.fetchTile(level, x, z, controller.signal))),
+    ]);
+    if (!roads) throw new Error('Seattle road data is not available.');
+    const seed = tiles.map(tile => btoa(String.fromCharCode(...new Uint8Array(tile.buffer)))).join(';');
+    return { ...JSON.parse(api.SelectSeattleDrive(JSON.stringify(roads), seed)), terrain };
+  } catch (error) {
+    controller.abort();
+    terrain.dispose();
+    throw error;
+  }
+}
+
+export class WorldDriveScene extends RaceScene {
+  constructor(graphics, world, terrain) {
+    const empty = { vertices: [] };
+    super(graphics, { name: world.name, length: 0, points: [] }, { land: empty, props: empty, road: empty });
+    this.world = world;
+    this.terrain = terrain;
+    this.scenery = new WorldScenery(graphics, terrain);
+  }
+
+  update(state, dt, mode, compatibility) {
+    if (state.tick < this.lastTick) {
+      this.cameraYaw = undefined;
+      this.previousMode = null;
+    }
+    this.lastTick = state.tick;
+    const frame = super.update(state, dt, mode, compatibility);
+    const eye = frame.camera.eye;
+    if (mode !== 'cockpit' || state.phase === 'ready') {
+      const height = this.terrain.sample(eye[0], eye[2]);
+      if (height !== null) eye[1] = Math.max(eye[1], height + 1.1);
+    }
+    const { x, z } = state.player;
+    return this.scenery.decorate(frame, x, z, { far: 25000, view: 'ground' });
+  }
+
+  hasDetailedGround({ x, z }) {
+    return Boolean(this.terrain.visualTileAt(x, z, 8));
+  }
+
+  mapPoint(x, z) {
+    const { minX, minZ, maxX, maxZ } = this.world.bounds;
+    const scale = 136 / Math.max(maxX - minX, maxZ - minZ);
+    return [80 + (x - (minX + maxX) / 2) * scale, 80 - (z - (minZ + maxZ) / 2) * scale];
+  }
+
+  mapStreetPath() {
+    return this.world.streets.map(([x, z, a, b]) =>
+      `M${this.mapPoint(x, z).map(n => n.toFixed(2)).join(' ')}L${this.mapPoint(a, b).map(n => n.toFixed(2)).join(' ')}`).join('');
+  }
+
+  mapPlanPath(points) {
+    return points.map(({ x, z }, i) => `${i === 0 ? 'M' : 'L'}${this.mapPoint(x, z).map(n => n.toFixed(2)).join(' ')}`).join('');
+  }
+
+  diagnostics() { return this.scenery.diagnostics(); }
+
+  dispose() { this.scenery.dispose(); }
+}
