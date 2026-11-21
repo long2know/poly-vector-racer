@@ -21,7 +21,7 @@ var flightPackagePath = Environment.GetEnvironmentVariable("STUNT_FLIGHT_PACKAGE
 var flightPackage = string.IsNullOrWhiteSpace(flightPackagePath) ? null :
     ExternalSourceData.ReadJson(flightPackagePath, bundle, "fa18-amiga-runtime");
 var worldFlightPath = Environment.GetEnvironmentVariable("STUNT_WORLD_FLIGHT");
-var worldFlight = string.IsNullOrWhiteSpace(worldFlightPath) ? null : WorldFlightCatalog.Load(worldFlightPath, bundle);
+using var worldFlight = string.IsNullOrWhiteSpace(worldFlightPath) ? null : WorldFlightCatalog.Load(worldFlightPath, bundle);
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -128,16 +128,23 @@ app.MapGet("/world-flight/manifest.json", (HttpContext context) =>
 app.MapGet("/world-flight/{revision}/tiles/{region}/{level:int}/{x:int}/{z:int}.bin",
     (HttpContext context, string revision, string region, int level, int x, int z) =>
     {
-        if (worldFlight is null || !worldFlight.TryTile(revision, region, level, x, z, out var path))
-            return Results.NotFound();
+        var tile = worldFlight?.Tile(revision, region, level, x, z);
+        if (tile is null) return Results.NotFound();
         context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
-        return Results.File(path!, "application/octet-stream");
+        return tile;
     });
 app.MapGet("/world-flight/{revision}/{city}-buildings.json", (HttpContext context, string revision, string city) =>
 {
-    var path = worldFlight?.BuildingsPath(revision, city);
-    if (path is null) return Results.NotFound();
+    var buildings = worldFlight?.Buildings(revision, city);
+    if (buildings is null) return Results.NotFound();
     context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
-    return Results.File(path, "application/json");
+    return buildings;
+});
+app.MapGet("/world-flight/{revision}/seattle-roads.json", (HttpContext context, string revision) =>
+{
+    var roads = worldFlight?.SeattleRoads(revision);
+    if (roads is null) return Results.NotFound();
+    context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+    return Results.Bytes(roads, "application/json");
 });
 app.Run();

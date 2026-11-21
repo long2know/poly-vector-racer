@@ -46,3 +46,28 @@ OSM_EXTRACTS = {
         "osm-sf-north": "-122.420,37.800,-122.392,37.810",
     },
 }
+
+# Separate map windows keep each API response below the OSM map node limit.
+# Only the road layer uses these: do not expand either city's building dataset.
+SEATTLE_ROAD_LONGITUDES = (-122.379, -122.355, -122.335, -122.313, -122.287)
+SEATTLE_ROAD_LATITUDES = (47.566, 47.587, 47.603, 47.614, 47.627, 47.648, 47.662)
+SEATTLE_ROAD_BOUNDS = (-122.379, 47.566, -122.287, 47.662)
+SEATTLE_LOCAL_BOUNDS = (-122.365, 47.579, -122.304, 47.649)
+SEATTLE_ROAD_EXTRACTS = {
+    f"osm-seattle-roads-{x}-{z}": f"{west:.3f},{south:.3f},{east:.3f},{north:.3f}"
+    for z, (south, north) in enumerate(zip(SEATTLE_ROAD_LATITUDES, SEATTLE_ROAD_LATITUDES[1:]))
+    for x, (west, east) in enumerate(zip(SEATTLE_ROAD_LONGITUDES, SEATTLE_ROAD_LONGITUDES[1:]))
+}
+ROAD_SPLIT_LIMIT = 3
+
+
+def seattle_road_inputs(directory):
+    def files(name, depth):
+        path = directory / f"{name}.xml"
+        if path.is_file():
+            return [path]
+        if depth == ROAD_SPLIT_LIMIT or not any(directory.glob(f"{name}-*.xml")):
+            raise FileNotFoundError(f"Missing Seattle road map input: {path}")
+        return files(f"{name}-a", depth + 1) + files(f"{name}-b", depth + 1)
+
+    return [path for name in SEATTLE_ROAD_EXTRACTS for path in files(name, 0)]

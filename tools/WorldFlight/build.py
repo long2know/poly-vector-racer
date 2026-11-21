@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build local WFT1 terrain and an independently licensed OSM building extract."""
+"""Build local WFT1 terrain and independently licensed OSM scenery extracts."""
 
 import argparse
 import hashlib
@@ -8,6 +8,7 @@ import math
 import re
 import struct
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +18,9 @@ from rasterio.features import rasterize
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject, transform, transform_bounds
 
-from areas import BASE_ELEVATION, DETAIL_ELEVATION, OSM_EXTRACTS, PACIFIC_NORTHWEST, WESTERN_CORES, WESTERN_DETAIL
+from areas import (BASE_ELEVATION, DETAIL_ELEVATION, OSM_EXTRACTS, PACIFIC_NORTHWEST, WESTERN_CORES,
+                   WESTERN_DETAIL, seattle_road_inputs)
+from roads import extract_roads
 
 SIDE = 33
 SPACING = [8192 >> level for level in range(9)]
@@ -60,14 +63,23 @@ LANDMARKS = [
     ("Seattle Great Wheel", "wheel", -122.34252, 47.60609, 21),
     ("Lumen Field", "stadium", -122.33163, 47.59520, 107),
     ("T-Mobile Park", "ballpark", -122.33253, 47.59141, 121),
+    ("Amazon Spheres", "spheres", -122.339465, 47.61565, 16),
     ("Transamerica Pyramid", "pyramid", -122.40278, 37.79520, 26),
     ("Coit Tower", "coit", -122.40578, 37.80239, 19),
 ]
+LANDMARK_AXES = {
+    "ballpark": ((-122.333001, 47.59109), (-122.331825, 47.59185)),
+    "spheres": ((-122.33972, 47.61548), (-122.33921, 47.61586)),
+}
 
 
 def landmarks_for_region(local):
     landmarks = [dict(name=name, kind=kind, x=x, z=z)
                  for name, kind, lon, lat, _ in LANDMARKS for x, z in [local(lon, lat)]]
+    for location in landmarks:
+        if axis := LANDMARK_AXES.get(location["kind"]):
+            a, b = [local(*point) for point in axis]
+            location["heading"] = math.atan2(b[0] - a[0], b[1] - a[1])
     a, b = local(-122.47761, 37.81362), local(-122.47884, 37.82501)
     landmarks.append(dict(name="Golden Gate Bridge", kind="golden-gate",
                           x=(a[0] + b[0]) / 2, z=(a[1] + b[1]) / 2,
@@ -149,7 +161,8 @@ def extract_buildings(city, inputs, output, local):
             nodes[node.attrib["id"]] = float(node.attrib["lon"]), float(node.attrib["lat"])
         for way in root.iterfind("way"):
             tags = {tag.attrib["k"]: tag.attrib["v"] for tag in way.iterfind("tag")}
-            if tags.get("building") not in (None, "no", "construction", "roof"):
+            if (tags.get("building") not in (None, "no", "construction", "roof") and
+                    (city != "seattle" or tags.get("wikidata") != "Q48596158")):
                 refs = [node.attrib["ref"] for node in way.iterfind("nd")]
                 if 4 <= len(refs) <= 200 and refs[0] == refs[-1]:
                     ways[way.attrib["id"]] = tags, refs[:-1]
@@ -189,6 +202,34 @@ def extract_buildings(city, inputs, output, local):
     x, z = local(*CITIES[city])
     return {"id": city, "x": x, "z": z, "featureCount": len(buildings),
             "taggedHeights": sum(row[2] == "height" for row in buildings)}
+
+
+def seattle_road_terrain(folder):
+    step = SPACING[-1]
+    span = step * (SIDE - 1)
+
+    @lru_cache(maxsize=128)
+    def tile(x, z):
+        data = (folder / "tiles" / "conus" / "8" / str(x) / f"{z}.bin").read_bytes()
+        if len(data) != 16 + SIDE * SIDE * 3 or struct.unpack_from("<4siii", data) != (b"WFT1", 8, x, z):
+            raise ValueError(f"Seattle bridge has an invalid elevation tile at {x}, {z}.")
+        return data
+
+    def sample(x, z):
+        tx, tz = math.floor(x / span), math.floor(z / span)
+        data = tile(tx, tz)
+        u, v = (x - span * tx) / step, (z - span * tz) / step
+        i, j = int(u), int(v)
+        fx, fz = u - i, v - j
+        index = j * SIDE + i
+        a, b, c, d = (struct.unpack_from("<h", data, 16 + 2 * n)[0]
+                      for n in (index, index + SIDE, index + SIDE + 1, index + 1))
+        height = ((1 - fz) * a + (fz - fx) * b + fx * c if fx <= fz
+                  else (1 - fx) * a + fz * c + (fx - fz) * d)
+        wet = data[16 + 2 * SIDE * SIDE + round(v) * SIDE + round(u)] != 0
+        return height, wet
+
+    return sample
 
 
 def make_catalog(output, raw):
@@ -340,10 +381,19 @@ def make_catalog(output, raw):
             tx, tz = local(*look)
             destinations.append(dict(id=id_, name=label, x=x, z=z, altitude=altitude,
                                      heading=math.atan2(tx - x, tz - z), targetX=tx, targetZ=tz))
-        catalog.append(dict(id=key, name=name, coverage=coverage, patches=patches[:len(coverage)], destinations=destinations,
-                            landmarks=landmarks_for_region(local) if key == "conus" else [],
-                            runway=runway if key == "conus" else None,
-                            cities=cities if key == "conus" else []))
+        region = dict(id=key, name=name, coverage=coverage, patches=patches[:len(coverage)], destinations=destinations,
+                      landmarks=landmarks_for_region(local) if key == "conus" else [],
+                      runway=runway if key == "conus" else None,
+                      cities=cities if key == "conus" else [])
+        if key == "conus":
+            def project_roads(points):
+                if not points:
+                    return []
+                xx, zz = transform(WGS, crs, *map(list, zip(*points)))
+                return [(x - origin[0], z - origin[1]) for x, z in zip(xx, zz)]
+
+            region["roads"] = extract_roads(seattle_road_inputs(raw), output, project_roads, seattle_road_terrain(output))
+        catalog.append(region)
     return catalog, count
 
 
@@ -352,16 +402,17 @@ def main():
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    # Publish a manifest only after every tile and the separate building database has been written.
+    # Publish a manifest only after every tile and separate scenery database has been written.
     args.output.mkdir(parents=True)
     sources = {}
     for name in ["etopo60.tif", "ne-land.geojson", "ne-lakes.geojson", "yosemite-usgs-degree.tif",
                  *(f"{name}-3dep.tif" for name in (BASE_ELEVATION | DETAIL_ELEVATION)),
-                 *(f"{name}.xml" for extracts in OSM_EXTRACTS.values() for name in extracts)]:
+                 *(f"{name}.xml" for extracts in OSM_EXTRACTS.values() for name in extracts),
+                 *(path.name for path in seattle_road_inputs(args.input))]:
         with (args.input / name).open("rb") as file:
             sources[name] = hashlib.file_digest(file, "sha256").hexdigest()
-    identity = hashlib.sha256(Path(__file__).read_bytes() + Path(__file__).with_name("areas.py").read_bytes()
-                              + json.dumps(sources, sort_keys=True).encode()).hexdigest()[:20]
+    code = b"".join(Path(__file__).with_name(file).read_bytes() for file in ("build.py", "areas.py", "roads.py"))
+    identity = hashlib.sha256(code + json.dumps(sources, sort_keys=True).encode()).hexdigest()[:20]
     regions, count = make_catalog(args.output, args.input)
     json_file(args.output / "manifest.json", {
         "schemaVersion": 1, "kind": "world-flight-terrain", "version": identity, "spacing": SPACING,

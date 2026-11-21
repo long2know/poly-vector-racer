@@ -8,6 +8,21 @@ const covered = (region, level, x, z) => region.coverage[level] &&
 const keyOf = (level, x, z) => `${level}/${x}/${z}`;
 const spanAt = level => spacing[level] * stride;
 const screenBand = [Infinity, 290000, 137000, 72000, 43000, 24000, 13000, 6800, 3800];
+const roadSize = 4 * 1024 * 1024, roadLimits = { features: 12000, points: 100000, tile: 5500, meshes: 96 };
+const roadStyles = Object.freeze({
+  freeway: { halfWidth: 10.4, lift: 1.24, colour: [.72, .61, .43] },
+  arterial: { halfWidth: 6.7, lift: .98, colour: [.53, .49, .40] },
+  local: { halfWidth: 4.15, lift: .73, colour: [.38, .41, .40] },
+});
+
+function validRoadArea(area) {
+  const b = area?.bounds;
+  return area?.id === 'seattle' &&
+    Number.isInteger(area.featureCount) && area.featureCount >= 1 && area.featureCount <= roadLimits.features &&
+    Number.isInteger(area.pointCount) && area.pointCount >= area.featureCount * 2 && area.pointCount <= roadLimits.points &&
+    Array.isArray(b) && b.length === 4 && b.every(n => Number.isFinite(n) && Math.abs(n) <= 40000) &&
+    [b[2] - b[0], b[3] - b[1]].every(size => size > 0 && size <= 20000);
+}
 
 export async function fetchWorldJson(url, limit, signal) {
   const response = await fetch(url, { signal });
@@ -44,6 +59,8 @@ export async function readWorldCatalog(path) {
       !['seattle', 'san-francisco'].includes(city.id) || ![city.x, city.z].every(Number.isFinite) ||
       !Number.isInteger(city.featureCount) || city.featureCount < 1 || city.featureCount > 30000))
       throw new Error('World Flight has invalid building areas.');
+    if (Object.hasOwn(region, 'roads') && (region.id !== 'conus' || !validRoadArea(region.roads)))
+      throw new Error('World Flight has invalid Seattle road metadata.');
   }
   return { ...data, tilesUrl: new URL(`${data.version}/`, url) };
 }
@@ -73,6 +90,196 @@ function hit(tile, tx, tz) {
   const h = tile.heights, a = j * side + i, b = a + side, x = u - i, z = v - j;
   return x <= z ? (1 - z) * h[a] + (z - x) * h[b] + x * h[b + 1]
     : (1 - x) * h[a] + z * h[b + 1] + (x - z) * h[a + 1];
+}
+
+function roadIndex(data, area) {
+  const rows = data?.roads;
+  if (data?.license !== 'ODbL-1.0' || data?.attribution !== '© OpenStreetMap contributors' ||
+      data?.licenseUrl !== 'https://www.openstreetmap.org/copyright' ||
+      !Array.isArray(rows) || rows.length !== area.featureCount)
+    throw new Error('Road features or attribution do not match the terrain catalog.');
+  const index = new Map(), b = area.bounds;
+  let count = 0;
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length !== 4) throw new Error('Invalid road feature.');
+    const [id, kind, structure, line] = row, bridge = structure === 'bridge';
+    if (!Number.isSafeInteger(id) || id < 1 || typeof kind !== 'string' || !Object.hasOwn(roadStyles, kind) ||
+        (!bridge && structure !== 'surface') || !Array.isArray(line) || line.length < 2 || line.length > 256)
+      throw new Error('Invalid road class or shape.');
+    count += line.length;
+    if (count > area.pointCount || line.some(p => !Array.isArray(p) || p.length !== (bridge ? 3 : 2) ||
+      !p.every(Number.isFinite) || p[0] < b[0] || p[0] > b[2] || p[1] < b[1] || p[1] > b[3] ||
+      (bridge && (p[2] < -50 || p[2] > 300))))
+      throw new Error('Invalid road coordinate or point count.');
+
+    const style = roadStyles[kind], normals = [];
+    for (let i = 1; i < line.length; i++) {
+      const dx = line[i][0] - line[i - 1][0], dz = line[i][1] - line[i - 1][1], length = Math.hypot(dx, dz);
+      if (length <= 0 || length > 128.03) throw new Error('Invalid road segment length.');
+      normals.push([-dz / length, dx / length]);
+    }
+    const edges = line.map(([x, z, y = 0], i) => {
+      const a = normals[Math.max(0, i - 1)], c = normals[Math.min(normals.length - 1, i)];
+      const u = a[0] + c[0], v = a[1] + c[1], length = Math.hypot(u, v);
+      const miter = length > 1 ? 2 / (length * length) : 0;
+      const dx = style.halfWidth * (miter ? u * miter : c[0]), dz = style.halfWidth * (miter ? v * miter : c[1]);
+      return [[x + dx, z + dz, y], [x - dx, z - dz, y]];
+    });
+    for (let i = 1; i < edges.length; i++) {
+      const polygon = [edges[i - 1][0], edges[i][0], edges[i][1], edges[i - 1][1]];
+      const extent = [Math.min(...polygon.map(p => p[0])), Math.min(...polygon.map(p => p[1])),
+        Math.max(...polygon.map(p => p[0])), Math.max(...polygon.map(p => p[1]))];
+      const segment = { polygon, extent, bridge, style };
+      for (const level of [7, 8]) {
+        const span = spanAt(level), [x0, z0, x1, z1] = extent.map(p => Math.floor(p / span));
+        for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+          const key = keyOf(level, x, z);
+          if (!index.has(key)) index.set(key, []);
+          const bucket = index.get(key);
+          if (bucket.length >= roadLimits.tile) throw new Error('Too many road segments in a terrain tile.');
+          bucket.push(segment);
+        }
+      }
+    }
+  }
+  if (count !== area.pointCount) throw new Error('Road point count does not match the terrain catalog.');
+  return index;
+}
+
+function clipRoad(polygon, distance) {
+  const result = [];
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+    const p = distance(a), q = distance(b);
+    if (p >= 0) result.push(a);
+    if ((p > 0 && q < 0) || (p < 0 && q > 0)) {
+      const t = p / (p - q);
+      result.push(a.map((v, j) => v + (b[j] - v) * t));
+    }
+  }
+  return result;
+}
+
+function appendRoadMesh(mesh, tile, segments, start, end) {
+  const step = spacing[tile.level], span = spanAt(tile.level);
+  const tx = tile.x * span, tz = tile.z * span, wet = index => tile.water[index] ? 1 : 0;
+  for (let i = start; i < end; i++) {
+    const { polygon, extent, bridge, style } = segments[i];
+    const points = polygon.map(([x, z, y]) => [x - tx, z - tz, y]);
+    const lowX = Math.max(0, Math.floor((extent[0] - tx) / step));
+    const lowZ = Math.max(0, Math.floor((extent[1] - tz) / step));
+    const highX = Math.min(stride - 1, Math.floor((extent[2] - tx) / step));
+    const highZ = Math.min(stride - 1, Math.floor((extent[3] - tz) / step));
+    for (let z = lowZ; z <= highZ; z++) for (let x = lowX; x <= highX; x++) {
+      const index = z * side + x, diagonal = wet(index) + wet(index + side + 1);
+      const first = bridge || diagonal + wet(index + side) < 2;
+      const second = bridge || diagonal + wet(index + 1) < 2;
+      if (!first && !second) continue;
+      const west = step * x, south = step * z;
+      const cell = clipRoad(clipRoad(clipRoad(clipRoad(points,
+        p => p[0] - west), p => west + step - p[0]), p => p[1] - south), p => south + step - p[1]);
+      if (cell.length < 3) continue;
+      // Split ribbons at rendered terrain facets, including both lateral edges of a road.
+      for (const [keep, sign] of [[first, 1], [second, -1]]) {
+        if (!keep) continue;
+        const clipped = clipRoad(cell, p => sign * (p[1] - south - (p[0] - west)));
+        const raised = clipped.map(([x, z, deck]) => {
+          const ground = hit(tile, tx + x, tz + z) + style.lift;
+          return [x, bridge ? Math.max(ground, deck + .3) : ground, z];
+        });
+        for (let i = 1; i + 1 < raised.length; i++) {
+          const a = raised[0], b = raised[i], c = raised[i + 1];
+          const up = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+          if (Math.abs(up) > 1e-5)
+            mesh.triangle(a, ...(up > 0 ? [b, c] : [c, b]), style.colour, 1);
+        }
+      }
+    }
+  }
+}
+
+class SeattleRoadLayer {
+  meshes = new Map();
+  meshCount = 0;
+  retryAt = 0;
+
+  constructor(catalog, area) {
+    this.url = new URL('seattle-roads.json', catalog.tilesUrl);
+    this.area = area;
+  }
+
+  draw(graphics, visible, x, z, now) {
+    const [west, south, east, north] = this.area.bounds;
+    if (Math.hypot(Math.max(0, west - x, x - east), Math.max(0, south - z, z - north)) > 12000) {
+      if (this.load || this.index || this.error) this.clear(graphics);
+      return [];
+    }
+    if (!this.index && !this.load && now >= this.retryAt) {
+      const load = new AbortController();
+      this.load = load;
+      fetchWorldJson(this.url, roadSize, load.signal).then(data => {
+        if (load.signal.aborted) return;
+        this.index = roadIndex(data, this.area);
+        this.error = null;
+      }).catch(error => {
+        if (load.signal.aborted) return;
+        this.error = `Seattle roads: ${error.message}`;
+        this.retryAt = performance.now() + 12000;
+      }).finally(() => { if (this.load === load) this.load = null; });
+    }
+    if (!this.index) return [];
+    if (this.visible !== visible) {
+      const distance = tile => {
+        const span = spanAt(tile.level);
+        return Math.hypot((tile.x + .5) * span - x, (tile.z + .5) * span - z);
+      };
+      this.visible = visible;
+      this.wanted = visible.filter(tile => this.index.has(keyOf(tile.level, tile.x, tile.z)))
+        .sort((a, b) => distance(a) - distance(b)).slice(0, roadLimits.meshes);
+      const wantedSet = new Set(this.wanted);
+      for (const [tile, mesh] of this.meshes) if (!wantedSet.has(tile)) {
+        if (mesh) graphics.releaseMesh(mesh);
+        this.meshes.delete(tile);
+      }
+      if (this.job && !wantedSet.has(this.job.tile)) this.job = null;
+    }
+    if (!this.job) {
+      const tile = this.wanted.find(tile => tile.mesh && !this.meshes.has(tile));
+      if (tile) this.job = { tile, mesh: new Builder(), next: 0 };
+    }
+    if (this.job) {
+      const job = this.job, tile = job.tile;
+      const segments = this.index.get(keyOf(tile.level, tile.x, tile.z));
+      const deadline = performance.now() + 3;
+      // A dense downtown tile can contain thousands of source segments.
+      for (let i = 0; i < 8 && job.next < segments.length; i++) {
+        const end = Math.min(job.next + 48, segments.length);
+        appendRoadMesh(job.mesh, tile, segments, job.next, end);
+        job.next = end;
+        if (performance.now() >= deadline) break;
+      }
+      if (job.next === segments.length) {
+        this.meshes.set(tile, job.mesh.vertices.length ? graphics.mesh(job.mesh) : null);
+        this.job = null;
+      }
+    }
+    this.meshCount = 0;
+    const draws = [];
+    for (const [tile, mesh] of this.meshes) if (mesh) {
+      const span = spanAt(tile.level);
+      draws.push({ mesh, offset: [tile.x * span, 0, tile.z * span], shadow: false });
+      this.meshCount++;
+    }
+    return draws;
+  }
+
+  clear(graphics) {
+    this.load?.abort();
+    this.load = this.index = this.error = this.visible = this.wanted = this.job = null;
+    for (const mesh of this.meshes.values()) if (mesh) graphics.releaseMesh(mesh);
+    this.meshes.clear();
+    this.meshCount = this.retryAt = 0;
+  }
 }
 
 function colourAt(a, b, c, step, water) {
@@ -131,6 +338,8 @@ export class WorldTerrain {
     this.errors = new Map();
     this.simulation = new Set();
     this.visible = [];
+    this.rendered = new Map();
+    this.roads = region.roads ? new SeattleRoadLayer(catalog, region.roads) : null;
     this.maxTiles = 512;
     this.epoch = 0;
   }
@@ -174,6 +383,14 @@ export class WorldTerrain {
   sample(x, z) {
     const tile = this.at(x, z);
     return tile ? hit(tile, x, z) : null;
+  }
+
+  visualSample(x, z, minimumLevel = 0) {
+    for (let level = this.region.coverage.length - 1; level >= minimumLevel; level--) {
+      const span = spanAt(level), tile = this.rendered.get(keyOf(level, Math.floor(x / span), Math.floor(z / span)));
+      if (tile?.mesh) return hit(tile, x, z);
+    }
+    return null;
   }
 
   isWater(x, z) {
@@ -273,6 +490,7 @@ export class WorldTerrain {
     }
     this.syncCollision(x, z);
     const visibleTiles = new Map(visible.map(tile => [keyOf(tile.level, tile.x, tile.z), tile]));
+    this.rendered = visibleTiles;
     const visibleAt = (x, z) => {
       for (let i = 0; i < this.region.coverage.length; i++) {
         const span = spanAt(i);
@@ -313,23 +531,27 @@ export class WorldTerrain {
     this.select(x, z, far, balanced, now);
     for (const tile of this.meshQueue.splice(0, 3))
       tile.mesh = this.graphics.mesh(makeElevationMesh(tile));
-    return this.visible.filter(tile => tile.mesh).flatMap(tile => {
+    const terrain = this.visible.filter(tile => tile.mesh).flatMap(tile => {
       const span = spanAt(tile.level), x = tile.x * span, z = tile.z * span;
       const draw = { mesh: tile.mesh, offset: [x, 0, z], shadow: false };
       return [draw, ...[...(tile.seams?.values() ?? [])].filter(seam => seam.mesh)
         .map(seam => ({ ...draw, mesh: seam.mesh }))];
     });
+    return this.roads ? [...terrain, ...this.roads.draw(this.graphics, this.visible, x, z, now)] : terrain;
   }
 
   get status() {
     if (this.outside) return 'Scenery boundary — choose another departure in Controls.';
-    if (this.errors.size) return `${this.errors.values().next().value.message} Using available terrain.`;
+    if (this.errors.size) return `${this.errors.values().next().value.message} Using available terrain.${
+      this.roads?.error ? ` ${this.roads.error}` : ''}`;
+    if (this.roads?.error) return this.roads.error;
     return this.pending.size ? 'Streaming terrain…' : '';
   }
 
   dispose() {
     for (const controller of this.pending.values()) controller.abort();
     this.pending.clear();
+    this.roads?.clear(this.graphics);
   }
 }
 

@@ -217,7 +217,7 @@ internal static partial class Program
         var firstGhost = game.Snapshot.Ghost!;
         Near(firstGhost.Duration, first.Duration, 1e-9, "first clean lap was not promoted");
         Require(firstGhost.Car is not null && firstGhost.Status == "playing", "a genuine first clean lap produced no ghost");
-        SameCar(first.Poses[0], firstGhost.Car!, "first ghost pose was fabricated instead of recorded");
+        SameCar(first.Poses[0].Car, firstGhost.Car!, "first ghost pose was fabricated instead of recorded");
         var best = CaptureLap(game, false);
         var saved = game.Snapshot.Ghost!;
         Require(best.Duration < first.Duration, "second moving-start lap was not a genuine improvement");
@@ -227,7 +227,7 @@ internal static partial class Program
             "ghost is not authoritative 30Hz samples plus actual lap endpoints");
         game.Command("restart");
         Near(game.Snapshot.Ghost!.Duration, saved.Duration, 1e-12, "restart discarded the best clean lap");
-        SameCar(best.Poses[0], game.Snapshot.Ghost.Car!, "restart did not use the actual saved first pose");
+        SameCar(best.Poses[0].Car, game.Snapshot.Ghost.Car!, "restart did not use the actual saved first pose");
         Require(game.Snapshot.Ghost.Car!.Speed > 10 && game.Snapshot.Player.Speed == 0,
             "restart replaced a genuine moving-start best ghost with a fabricated stationary car");
         Run(game, 3, Idle);
@@ -237,14 +237,15 @@ internal static partial class Program
         for (var tick = 1; tick <= ticks + 120; tick++)
         {
             game.Advance(Step, Idle);
-            var replay = game.Snapshot.Ghost!;
-            var expected = RecordedPoseAt(best.Poses, tick);
+            var snapshot = game.Snapshot;
+            var replay = snapshot.Ghost!;
+            var expected = RecordedPoseAt(best.Poses, tick, snapshot.LapTime);
             SameGhostPose(expected, replay.Car!, $"actual recorded trajectory playback at tick {tick}");
             maximumError = Math.Max(maximumError, PositionError(expected, replay.Car!));
             if (tick < ticks && tick % 4 != 0)
             {
                 subSampleChecks++;
-                interpolationOffset = Math.Max(interpolationOffset, PositionError(expected, best.Poses[tick]));
+                interpolationOffset = Math.Max(interpolationOffset, PositionError(expected, best.Poses[tick].Car));
             }
             if (tick == 61)
             {
@@ -258,7 +259,7 @@ internal static partial class Program
         }
         Require(subSampleChecks > 100 && interpolationOffset > 1e-5,
             "playback comparison never exercised real interpolation between compact stored poses");
-        SameCar(best.Poses[^1], game.Snapshot.Ghost!.Car!, "over-duration playback looped instead of holding the recorded last pose");
+        SameCar(best.Poses[^1].Car, game.Snapshot.Ghost!.Car!, "over-duration playback looped instead of holding the recorded last pose");
         Console.WriteLine($"  genuine best={saved.Duration:F6}s / {saved.SampleCount} poses; " +
                           $"{subSampleChecks} sub-sample comparisons, max position error={maximumError:E2}m; restart/hold verified");
     }
@@ -403,10 +404,10 @@ internal static partial class Program
         }
     }
 
-    private static (List<CarSnapshot> Poses, double Duration) CaptureLap(GameSimulation game, bool first)
+    private static (List<(double Time, CarSnapshot Car)> Poses, double Duration) CaptureLap(GameSimulation game, bool first)
     {
         var start = game.Snapshot;
-        var poses = new List<CarSnapshot> { start.Player };
+        var poses = new List<(double Time, CarSnapshot Car)> { (0, start.Player) };
         for (var tick = 0; tick < 120 * 90 && game.Snapshot.Lap == start.Lap; tick++)
         {
             game.Advance(Step, Drive(game, false));
@@ -416,21 +417,23 @@ internal static partial class Program
             if (first && snapshot.Lap == start.Lap)
                 Require(snapshot.Ghost!.Car is null && snapshot.Ghost.Duration == 0,
                     "ghost playback appeared before a completed clean lap");
-            poses.Add(snapshot.Player);
+            poses.Add((snapshot.Time - start.Time, snapshot.Player));
         }
         Require(game.Snapshot.Lap == start.Lap + 1, "recording trace failed to complete its real circuit");
         return (poses, game.Snapshot.Time - start.Time);
     }
 
-    private static CarSnapshot RecordedPoseAt(List<CarSnapshot> poses, int tick)
+    private static CarSnapshot RecordedPoseAt(List<(double Time, CarSnapshot Car)> poses, int tick, double lapTime)
     {
         if (tick >= poses.Count - 1)
-            return poses[^1];
+            return poses[^1].Car;
         var low = tick / 4 * 4;
         var high = Math.Min(low + 4, poses.Count - 1);
-        var alpha = (tick - low) / (double)(high - low);
-        var a = poses[low];
-        var b = poses[high];
+        var (startTime, a) = poses[low];
+        var (endTime, b) = poses[high];
+        // Use the elapsed times actually recorded on the moving-start lap:
+        // rounding can put an exact tick midpoint on either side of the discrete pose switch.
+        var alpha = Math.Clamp((lapTime - startTime) / (endTime - startTime), 0, 1);
         return new CarSnapshot(
             Blend(a.X, b.X), Blend(a.Y, b.Y), Blend(a.Z, b.Z),
             Rotate(a.Yaw, b.Yaw), Rotate(a.Pitch, b.Pitch), Rotate(a.Roll, b.Roll),

@@ -1,0 +1,27 @@
+World Flight — compiled scenery data notice
+
+The terrain uses USGS 3D Elevation Program (3DEP), The National Map,
+public-domain bare-earth elevation, projected and downsampled into game meshes:
+https://www.usgs.gov/3d-elevation-program/about-3dep-products-services
+
+Base relief uses NOAA NCEI ETOPO 2022 v1, 60 arc-second surface model:
+https://www.ncei.noaa.gov/products/etopo-global-relief-model
+
+Water masks use Natural Earth 1:10m land and lakes (public domain):
+https://www.naturalearthdata.com/about/terms-of-use/
+
+Runway threshold coordinates use public-domain OurAirports data. Strip
+dimensions and elevation were checked against King County Boeing Field information:
+https://github.com/davidmegginson/ourairports-data
+
+seattle-buildings.json, san-francisco-buildings.json and seattle-roads.json,
+when present, are modified databases © OpenStreetMap contributors. They are
+available under the Open Database License (ODbL) v1.0:
+https://www.openstreetmap.org/copyright
+https://opendatacommons.org/licenses/odbl/1-0/
+Building ways were filtered and projected; heights may be estimated. Highway
+centerlines were filtered, clipped and projected; bridge deck heights are estimates.
+These databases are not relicensed as game code.
+
+receipt.json records the input SHA-256 hashes and the data revision. No
+provider endorses the game; this scenery is not intended for navigation.

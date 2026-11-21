@@ -2,19 +2,25 @@ using System.Text.Json;
 
 internal static class ExternalSourceData
 {
+    public const int MaxJsonBytes = 16 * 1024 * 1024;
+
     public static byte[] ReadJson(string path, string bundle, string kind)
     {
         var full = RequirePath(path, bundle);
-        if (new FileInfo(full).Length is <= 0 or > 16 * 1024 * 1024)
+        if (new FileInfo(full).Length is <= 0 or > MaxJsonBytes)
             throw new InvalidDataException("External source packages must contain 1 byte to 16 MiB.");
         var bytes = File.ReadAllBytes(full);
         using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 64 });
-        var root = document.RootElement;
+        RequireJsonKind(document.RootElement, kind);
+        return bytes;
+    }
+
+    public static void RequireJsonKind(JsonElement root, string kind)
+    {
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("schemaVersion", out var version) ||
             version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number) || number != 1 ||
             !root.TryGetProperty("kind", out var tag) || tag.ValueKind != JsonValueKind.String || tag.GetString() != kind)
             throw new InvalidDataException($"The configured file is not a supported {kind} source package.");
-        return bytes;
     }
 
     public static string RequirePath(string path, string bundle)

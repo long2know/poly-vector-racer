@@ -70,9 +70,9 @@
       <button id="world-flight-button" class="secondary" type="button" disabled>WORLD FLIGHT / SEATTLE &amp; U.S.</button>
       <label class="menu-mode world-flight-only" for="world-departure-menu">DEPARTURE<select id="world-departure-menu" disabled></select></label>
       <div class="quick-controls keyboard-hints racing-only"><kbd>W A S D</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>BOOST</span></div>
-      <div class="quick-controls keyboard-hints flight-only"><kbd>ARROWS</kbd><span>FLY</span><kbd>+ / -</kbd><span>THROTTLE</span></div>
+      <div class="quick-controls keyboard-hints flight-only"><kbd>&larr; / &rarr;</kbd><span>AILERONS</span><kbd>+ / -</kbd><span>SET THROTTLE</span></div>
       <div class="quick-controls touch-hints racing-only"><span>TWO THUMBS: STEER LEFT / HOLD GAS RIGHT<br>SLIDE UP ON GAS FOR TURBO</span></div>
-      <div class="quick-controls touch-hints flight-only"><span>LEFT PAD: BANK / DRAG UP TO CLIMB<br>HOLD GAS RIGHT / SLIDE UP FOR AFTERBURNER</span></div>
+      <div class="quick-controls touch-hints flight-only"><span>LEFT PAD: BANK / DRAG UP TO RAISE THE NOSE<br>PWR + / &minus; SETS THROTTLE</span></div>
       <button class="text-button" id="menu-help" type="button">Controls / touch / gamepad setup <span aria-hidden="true">&#8594;</span></button>
     </section>
 
@@ -147,6 +147,13 @@
       <button id="pause-button" class="pause-button" type="button" aria-label="Pause race">II</button>
     </section>
 
+    <div id="flight-view-controls" class="flight-only" role="group" aria-label="Flight views" hidden>
+      <button id="flight-look-left" type="button" class="touch-glance" data-view="left" aria-label="Look left" title="Look left (4)">&#8592;</button>
+      <button id="flight-view-reset" type="button" data-view="forward" aria-keyshortcuts="5" title="Center the flight view (5 or 8)">CENTER VIEW</button>
+      <button id="flight-look-rear" type="button" class="touch-glance" data-view="rear" aria-label="Look aft" title="Look aft (2)">AFT</button>
+      <button id="flight-look-right" type="button" class="touch-glance" data-view="right" aria-label="Look right" title="Look right (6)">&#8594;</button>
+    </div>
+
     <section id="pause-panel" class="modal-panel" aria-labelledby="pause-title" hidden>
       <span class="eyebrow">TAKE A BREATHER</span>
       <h2 id="pause-title">ON HOLD.</h2>
@@ -169,7 +176,7 @@
       <button id="reload-button" type="button" class="primary">RELOAD GAME</button>
     </section>
 
-    <div id="touch-controls" aria-label="Touch driving controls">
+    <div id="touch-controls" role="group" aria-label="Touch driving controls">
       <div class="touch-steer-group">
         <div id="touch-steering" role="slider" aria-label="Drag horizontally to steer" aria-valuemin="-1" aria-valuemax="1" aria-valuenow="0">
           <span id="steer-label" class="steer-label">DRAG TO STEER</span><span id="touch-steering-thumb" aria-hidden="true"></span>
@@ -179,15 +186,19 @@
       <div class="touch-pedal-group">
         <div class="touch-actions"><button id="touch-recover" class="touch-recover" type="button">RECOVER</button><button id="touch-gear" class="touch-gear flight-only" type="button">GEAR DN</button><button id="touch-hook" class="touch-hook original-flight-only" type="button">HOOK UP</button></div>
         <div class="touch-pedals">
-          <button data-control="brake">BRAKE</button>
-          <button data-control="throttle" class="touch-gas">GAS<small id="touch-gas-hint">SLIDE UP FOR TURBO</small></button>
-          <button data-control="boost" class="touch-boost">BOOST</button>
+          <button data-control="brake" type="button">BRAKE</button>
+          <button data-control="throttle" class="touch-gas racing-only" type="button">GAS<small>SLIDE UP FOR TURBO</small></button>
+          <div class="touch-throttle flight-only" role="group" aria-label="Set flight throttle">
+            <button id="touch-throttle-up" data-control="throttle-up" class="touch-gas" type="button" aria-label="Increase throttle" aria-describedby="touch-throttle-setting" title="Tap or hold to raise throttle. Slide up to request afterburner at high power.">PWR +<small id="touch-throttle-setting">0%</small></button>
+            <button id="touch-throttle-down" data-control="throttle-down" type="button" aria-label="Decrease throttle" title="Tap or hold to lower throttle.">PWR &minus;</button>
+          </div>
+          <button data-control="boost" class="touch-boost" type="button"><span class="racing-only">BOOST</span><span class="flight-only" title="Hold for afterburner at high power">BURN</span></button>
         </div>
       </div>
     </div>
     <div id="toast" class="toast" role="status" hidden></div>
     <div id="stats" class="stats" hidden></div>
-    <footer class="footer"><span id="track-mode">INSPIRED BY THE AMIGA ORIGINAL / AUTHORED PLAYABLE PROTOTYPE</span><span class="world-flight-only world-credit">Elevation: USGS 3DEP / NOAA NCEI · Coast: Natural Earth · Buildings: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></span><span id="device-label"><i class="device-dot"></i> KEYBOARD READY</span></footer>
+    <footer class="footer"><span id="track-mode">INSPIRED BY THE AMIGA ORIGINAL / AUTHORED PLAYABLE PROTOTYPE</span><span class="world-flight-only world-credit">Elevation: USGS 3DEP / NOAA NCEI · Coast: Natural Earth · Buildings &amp; Seattle roads: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></span><span id="device-label"><i class="device-dot"></i> KEYBOARD READY</span></footer>
   </main>
 
   <dialog id="help-dialog">
@@ -199,19 +210,24 @@
       <div><h3>CONTROLLER</h3><dl><dt>Accelerate / brake</dt><dd>RT / LT</dd><dt>Steer</dt><dd>Left stick or D-pad</dd><dt>Turbo</dt><dd>A / Cross or RB</dd><dt>Recover</dt><dd>B / Circle</dd><dt>Camera / pause</dt><dd>Y / Triangle / Start</dd></dl><p class="small">Connect a controller and press a button. For USB joystick adapters, select the classic layout below.</p></div>
     </div>
     <div class="flight-only flight-brief">
-      <h3>FLIGHT / INTERCEPTOR BAY</h3>
+      <h3>FLIGHT CONTROLS</h3>
       <p>Throttle up along the runway, then gently pull back above about 130 knots.
-        Retract gear after takeoff. Bank to turn; low speed or excessive pitch can stall.
+        Retract gear after takeoff. Use rudder to steer while rolling on the runway;
+        use the ailerons to bank once airborne. Low speed or excessive pitch can stall.
         Land aligned with the runway, gear down, with a gentle descent.
         Air Start puts you already flying for immediate practice.</p>
-      <dl><dt>Bank / pitch</dt><dd>A/D or left/right; W/Up nose down, S/Down nose up</dd>
-        <dt>Throttle / afterburner</dt><dd>+ / -; Space or Shift</dd>
+      <dl><dt>Ailerons (bank)</dt><dd>A/D or left/right &mdash; still aircraft-relative when looking around</dd>
+        <dt>Pitch</dt><dd>W/Up nose down; S/Down nose up</dd>
+        <dt>Set throttle</dt><dd>Hold =/+ to raise or - to lower; release to keep the setting</dd>
+        <dt>Afterburner</dt><dd>Hold Space or Shift at high throttle</dd>
         <dt>Rudder / airbrake</dt><dd>Q/E; B or Backspace</dd>
         <dt>Gear / recover</dt><dd>G / R</dd>
-        <dt>Camera / chase HUD</dt><dd>C switches view; V or the HUD button toggles the chase overlay</dd>
+        <dt>Camera / chase HUD</dt><dd>C switches cockpit/chase; V or HUD toggles the chase overlay</dd>
+        <dt>Snap views</dt><dd>Number row or numpad: 4/6 left/right, 2 aft, 7/9 forward diagonals, 1/3 rear diagonals, 5 or 8 center</dd>
+        <dt>Orbit / center</dt><dd>Drag the scene with mouse or touch in chase; choose Center View to reset. Touch cockpit has left, aft and right buttons.</dd>
         <dt>Pause / stats</dt><dd>P / F3; M sound, F fullscreen</dd>
-        <dt>Controller</dt><dd>Left stick flies; right stick X rudder; RT/LT change throttle; A afterburner; X airbrake; left-stick click gear</dd>
-        <dt>Touch</dt><dd>Drag left pad to bank; drag UP to climb. Hold GAS right; slide up for afterburner.</dd></dl>
+        <dt>Controller</dt><dd>Left stick X banks, Y pitches; right stick X rudder; RT/LT set throttle; A afterburner; X airbrake; left-stick click gear</dd>
+        <dt>Touch</dt><dd>Left pad banks and pitches (drag up to raise the nose). Tap or hold PWR +/&minus; to set throttle. Hold BURN or slide up from PWR + for afterburner; release to stop it.</dd></dl>
       <button id="flight-air-start" type="button" class="secondary">AIR START / FLIGHT PRACTICE</button>
       <button id="flight-gear-button" type="button" class="secondary">GEAR DOWN / G</button>
       <button id="flight-carrier-start" type="button" class="secondary original-flight-only">CARRIER START / ORIGINAL CATAPULT</button>
@@ -237,7 +253,7 @@
           Scenic departures start airborne; Boeing Field is the modeled landing strip.
           For play, not real-world navigation. Terrain: USGS 3DEP and NOAA NCEI ETOPO 2022.
           Coastline: Natural Earth.
-          Buildings: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors, ODbL</a>.
+          Buildings &amp; Seattle roads: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors, ODbL</a>.
           Unmeasured heights are estimated. Iconic landmark models are authored for the game.</p>
       </div>
     </div>

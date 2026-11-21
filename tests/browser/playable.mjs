@@ -158,7 +158,9 @@ async function startDriver() {
         const speed=Math.abs(car.speed),look=10+speed*.4,target=at(s+look),road=at(s);
         const error=angle(Math.atan2(target.x-car.x,target.z-car.z)-car.yaw);
         const rate=2*Math.max(speed,8)*Math.sin(error)/look;
-        const scale=clamp(car.speed/12,-1,1)*(1.35/(1+speed/13));
+        const t=clamp((speed-10)/16,0,1);
+        const gain=car.grounded && car.speed>0 && car.suspension.some(v=>v>0)?1+.32*(1-t*t*(3-2*t)):1;
+        const scale=clamp(car.speed/12,-1,1)*(1.35/(1+speed/13))*gain;
         steer=Math.abs(scale)<.03?0:clamp(rate/scale,-1,1);
         const desired=Math.abs(angle(at(s+38).heading-road.heading))>.06?20:29;
         throttle=clamp((desired-car.speed)*.65,0,1);
@@ -192,6 +194,164 @@ async function driveUntil(expression, timeout = 90000, heldKeys = []) {
   throw new Error(`Public-input driving did not reach ${expression}`);
 }
 
+const flightAircraft = 'stuntRacer.observe().flight.aircraft';
+const flightCamera = 'stuntRacer.diagnostics().flightCamera';
+const throttleSetting = 'parseInt(document.querySelector("#touch-throttle-setting").textContent, 10)';
+const flightBank = `(() => {const {up, forward:f}=${flightAircraft};return (up.x*f.z-up.z*f.x)/Math.hypot(f.x,f.z);})()`;
+
+function flightViewExpression(preset) {
+  return `(() => {const camera=${flightCamera}; return camera?.view===${JSON.stringify(preset)}
+    && {camera, aircraft:${flightAircraft}};})()`;
+}
+
+async function flightInput(perform, expression, timeout = 12000) {
+  const deadline = Date.now() + timeout;
+  const stall = `(() => {const toast=document.querySelector("#toast");
+    return !toast.hidden && toast.textContent.startsWith("Paused after a long browser stall.");})()`;
+  while (Date.now() < deadline) {
+    const phase = await evaluate('stuntRacer.observe().phase');
+    if (phase === 'paused') {
+      assert.equal(await evaluate(stall), true, `Unexpected pause while checking ${expression}`);
+      evidence.browserStallPauses = (evidence.browserStallPauses ?? 0) + 1;
+      await click('resume-button');
+      await waitFor('stuntRacer.observe().phase === "racing"', Math.max(100, deadline - Date.now()));
+      continue;
+    }
+    assert.equal(phase, 'racing', `Flight stopped while checking ${expression}`);
+    await perform?.();
+    const next = await waitFor(`(() => {const phase=stuntRacer.observe().phase;
+      if (phase !== "racing") return {phase}; const result=${expression};
+      return result && {result};})()`, Math.max(100, deadline - Date.now()));
+    if ('result' in next) return next.result;
+  }
+  throw new Error(`Flight stalled without reaching ${expression}`);
+}
+
+async function flightView(preset, perform) {
+  return flightInput(perform, flightViewExpression(preset));
+}
+
+async function selectFlightCamera(mode, touch = false) {
+  await flightInput(async () => {
+    if (await evaluate('stuntRacer.diagnostics().camera') !== mode) {
+      if (touch) await touchTap('camera-button');
+      else await tap('KeyC');
+    }
+  }, `stuntRacer.diagnostics().camera === ${JSON.stringify(mode)} && ${flightViewExpression('forward')}`);
+}
+
+function cockpitLook({ camera, aircraft: { forward: f, up: u } }) {
+  const [x, y, z] = camera.target.map((value, i) => value - camera.eye[i]);
+  const length = Math.hypot(x, y, z);
+  return {
+    forward: (x * f.x + y * f.y + z * f.z) / length,
+    right: (x * (u.y * f.z - u.z * f.y) + y * (u.z * f.x - u.x * f.z) + z * (u.x * f.y - u.y * f.x)) / length,
+  };
+}
+
+async function verifyCockpitFlightViews() {
+  const poses = {};
+  for (const [code, preset, axis, sign] of [['Digit4', 'left', 'right', -1], ['Numpad6', 'right', 'right', 1],
+    ['Digit2', 'rear', 'forward', -1], ['Digit5', 'forward', 'forward', 1]]) {
+    poses[preset] = await flightView(preset, () => tap(code));
+    assert.ok(cockpitLook(poses[preset])[axis] * sign > 0.98, `${preset} looks in the correct aircraft-relative direction`);
+    const ladder = await evaluate('getComputedStyle(document.querySelector("#flight-guidance svg")).display');
+    assert.equal(ladder === 'none', preset !== 'forward', 'the forward reticle must not follow the side or rear view');
+  }
+  return poses;
+}
+
+async function bankFlight(code, direction) {
+  try {
+    return await flightInput(() => key(code, true),
+      `!${flightAircraft}.onGround && ${direction} * ${flightBank} > .1 && ${flightBank}`, 10000);
+  } finally { await key(code, false); }
+}
+
+async function orbitFlightWithPointer(touch) {
+  const start = await evaluate('({x:innerWidth*.56,y:innerHeight*.64})');
+  const end = { x: start.x + 110, y: start.y - 78 };
+  const dragging = 'document.querySelector("#game").classList.contains("orbiting")';
+  const aircraftRelativeOrbit = `(() => {
+    const pose=${flightViewExpression('orbit')};
+    if (!pose) return false;
+    const {x,y,z,yaw}=pose.aircraft;
+    const [dx,dy,dz]=pose.camera.eye.map((value,i)=>value-[x,y,z][i]);
+    return dx*Math.cos(yaw)-dz*Math.sin(yaw)>8 && dy>12 && pose;
+  })()`;
+  let pressed = false;
+  const release = async () => {
+    if (!pressed) return;
+    if (touch) await cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    else await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...end, button: 'left', buttons: 0, clickCount: 1 });
+    pressed = false;
+  };
+  let orbit;
+  try {
+    orbit = await flightInput(async () => {
+      await release();
+      if (!touch) await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...start, buttons: 0 });
+      assert.equal(await evaluate(`document.elementFromPoint(${start.x}, ${start.y})?.id`), 'game', 'orbit must start on the canvas');
+      if (touch) await cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...start, id: 32 }] });
+      else await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...start, button: 'left', buttons: 1, clickCount: 1 });
+      pressed = true;
+      await waitFor(`${dragging} || stuntRacer.observe().phase !== "racing"`, 4000);
+      if (!await evaluate(dragging)) return;
+      if (touch) await cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...end, id: 32 }] });
+      else await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...end, buttons: 1 });
+    }, `${dragging} && ${aircraftRelativeOrbit}`);
+  } finally { await release(); }
+  await waitFor(`!(${dragging})`, 4000);
+  const centered = await flightView('forward', () => touch ? touchTap('flight-view-reset') : click('flight-view-reset'));
+  const { x: cx, z: cz, yaw: heading } = centered.aircraft;
+  const ahead = (centered.camera.eye[0] - cx) * Math.sin(heading) + (centered.camera.eye[2] - cz) * Math.cos(heading);
+  assert.ok(ahead < -20, 'Center View restores the chase eye behind the aircraft');
+  return { orbit, centered };
+}
+
+async function verifyFlightThrottle() {
+  await flightInput(() => virtualPad(), 'Boolean(stuntRacer.diagnostics().controller)');
+  const trigger = value => async () => {
+    await virtualPad();
+    await sleep(100);
+    await virtualPad(value);
+  };
+  const before = await evaluate(throttleSetting);
+  await flightInput(trigger({ 7: 0.7 }), `${throttleSetting} >= ${before + 17}`);
+  await virtualPad();
+  const raised = await evaluate(throttleSetting);
+  await flightInput(null, `Math.abs(${flightAircraft}.throttle - ${raised / 100}) < .035`);
+  assert.equal(await evaluate(throttleSetting), raised, 'RT release retains the setting and reaches actual power');
+  await flightInput(trigger({ 6: 0.7 }), `${throttleSetting} <= ${raised - 13}`);
+  await virtualPad();
+  const lowered = await evaluate(throttleSetting);
+  await flightInput(null, `Math.abs(${flightAircraft}.throttle - ${lowered / 100}) < .035`);
+  assert.equal(await evaluate(throttleSetting), lowered, 'LT release retains the lowered setting');
+  await flightView('forward');
+  const drag = await evaluate('({x:innerWidth*.46,y:innerHeight*.54})');
+  assert.equal(await evaluate(`document.elementFromPoint(${drag.x}, ${drag.y})?.id`), 'game');
+  await flightView('orbit', async () => {
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...drag, button: 'left', buttons: 0, clickCount: 1 });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...drag, button: 'left', buttons: 1, clickCount: 1 });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: drag.x + 85, y: drag.y, buttons: 1 });
+  });
+  await evaluate('window.__qualificationPad.buttons[7]={pressed:true,value:1}; window.dispatchEvent(new Event("blur"))');
+  await waitFor('stuntRacer.observe().phase === "paused"');
+  const paused = (await observe()).flight;
+  assert.equal(await evaluate(throttleSetting), lowered, 'blur preserves the deliberate power setting');
+  assert.equal(await evaluate('document.querySelector("#game").classList.contains("orbiting")'), false, 'blur ends a held orbit drag');
+  await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...drag, button: 'left', buttons: 0, clickCount: 1 });
+  await click('resume-button');
+  await waitFor('stuntRacer.observe().phase === "racing"');
+  await flightView('forward');
+  await sleep(500);
+  assert.equal(await evaluate(throttleSetting), lowered, 'resuming with a held trigger must not advance throttle');
+  const resumed = (await observe()).flight;
+  assert.ok(resumed.time > paused.time && Math.abs(resumed.aircraft.throttle - lowered / 100) < .04);
+  await evaluate('Object.defineProperty(navigator,"getGamepads",{configurable:true,value:()=>[]});');
+  return { before, raised, lowered, paused, resumed };
+}
+
 async function verifyFlight() {
   await select('game-mode', 'flight');
   await waitFor('stuntRacer.diagnostics().ready && stuntRacer.observe().flight?.phase === "ready"');
@@ -208,8 +368,19 @@ async function verifyFlight() {
   if (diagnostics.camera !== 'chase') await tap('KeyC');
   await screenshot('10-flight-runway-ready.png');
   await click('air-start-button');
-  await waitFor('stuntRacer.observe().phase === "racing" && stuntRacer.observe().flight.aircraft.y > 250');
-  await waitFor('stuntRacer.diagnostics().audioState === "running" && stuntRacer.diagnostics().audioRms > 0.0001');
+  await waitFor('["racing","paused"].includes(stuntRacer.observe().phase)');
+  await flightInput(null, `${flightAircraft}.y > 250 && stuntRacer.diagnostics().audioState === "running" && stuntRacer.diagnostics().audioRms > 0.0001`);
+  const airStart = (await observe()).flight.aircraft;
+  assert.ok(Math.abs(airStart.throttle - .35) < .01, 'Air Start initializes the power lever to the actual air-start setting');
+  await selectFlightCamera('cockpit');
+  const cockpitViews = await verifyCockpitFlightViews();
+  await flightView('left', () => tap('Digit4'));
+  const rightBank = await bankFlight('KeyD', 1);
+  const leftBank = await bankFlight('ArrowLeft', -1);
+  await selectFlightCamera('chase');
+  const orbit = await orbitFlightWithPointer(false);
+  const throttle = await verifyFlightThrottle();
+  evidence.flight = { airStart, cockpitViews, rightBank, leftBank, orbit, throttle };
   await tap('KeyR');
   await waitFor('stuntRacer.observe().phase === "ready" && document.body.dataset.phase === "ready"');
   await click('start-button');
@@ -217,12 +388,22 @@ async function verifyFlight() {
   await key('Equal', true, '=');
   await driveUntil('stuntRacer.observe().flight.aircraft.throttle > 0.98', 15000, [['Equal', '=']]);
   await key('Equal', false, '=');
+  const wheelTime = (await observe()).flight.time + .4;
+  const ground = await flightInput(() => key('KeyD', true), `${flightAircraft}.speed > 16
+    && stuntRacer.observe().flight.time >= ${wheelTime} && {jet:${flightAircraft}, bank:${flightBank}}`, 45000);
+  await key('KeyD', false);
+  assert.equal(ground.jet.onGround, true);
+  assert.ok(Math.abs(ground.bank) < .015, 'Modern ailerons do not bank the jet on wheels');
+  await flightInput(() => key('KeyE', true), `${flightAircraft}.yaw - ${ground.jet.yaw} > .025`);
+  await key('KeyE', false);
+  assert.equal(await evaluate(`Math.abs(${flightBank}) < .015`), true, 'rudder steers the rolling jet without banking');
+  evidence.flight.ground = ground;
   await driveUntil('stuntRacer.observe().flight.aircraft.speed > 62', 45000);
   await key('KeyS', true);
   await driveUntil('!stuntRacer.observe().flight.aircraft.onGround', 15000, [['KeyS']]);
   await key('KeyS', false);
   await driveUntil(`stuntRacer.observe().flight.aircraft.y > ${runway.y + 5}`, 15000);
-  evidence.flight = { takeoff: await observe() };
+  evidence.flight.takeoff = await observe();
   assert.ok(evidence.flight.takeoff.flight.aircraft.y > runway.y + 2, 'real keyboard throttle and elevator must lift the aircraft');
   assert.ok(evidence.flight.takeoff.flight.aircraft.z > runway.z + 100);
   assert.equal(await evaluate('document.querySelector("#speed-unit").textContent'), 'KTS');
@@ -254,19 +435,33 @@ async function verifyFlight() {
   await waitFor('stuntRacer.observe().phase === "racing" && document.body.dataset.phase === "racing" && stuntRacer.observe().flight.aircraft.y > 250 && document.querySelector("#touch-steering").getBoundingClientRect().width > 0');
   const before = (await observe()).flight.aircraft;
   const pad = await evaluate('(() => {const r=document.querySelector("#touch-steering").getBoundingClientRect();return {x:r.x+r.width*.6,y:r.y+r.height*.33,id:10};})()');
-  const gas = await evaluate('(() => {const r=document.querySelector("[data-control=throttle]").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,id:20};})()');
+  const gas = await evaluate('(() => {const r=document.querySelector("#touch-throttle-up").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,id:20};})()');
   await cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pad, gas] });
   await sleep(650);
   evidence.flight.touch = await observe();
   assert.ok(evidence.flight.touch.flight.aircraft.forward.y > before.forward.y + 0.02, 'touch stick up must actually pitch the aircraft up');
   assert.ok(evidence.flight.touch.flight.aircraft.up.x > before.up.x + 0.03, 'touch stick right must bank the aircraft');
-  await cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [pad, { ...gas, y: gas.y - 42 }] });
-  await sleep(450);
-  assert.equal((await observe()).flight.aircraft.afterburner, true);
-  await releaseTouch({ ...gas, y: gas.y - 42 }, [pad]);
-  await cdp.call('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
-  await sleep(100);
-  assert.equal((await observe()).flight.aircraft.afterburner, false);
+  await releaseTouch(pad, [gas]);
+  await driveUntil(`${flightAircraft}.throttle > .9`, 10000);
+  await cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...gas, y: gas.y - 42 }] });
+  await driveUntil(`${flightAircraft}.afterburner`, 10000);
+  await cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await driveUntil(`!${flightAircraft}.afterburner && ${flightAircraft}.throttle > .98`, 10000);
+  assert.equal(await evaluate(throttleSetting), 100, 'afterburner release must not return to the air-start throttle');
+  const trimDown = await evaluate('(() => {const r=document.querySelector("#touch-throttle-down").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,id:21};})()');
+  await cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [trimDown] });
+  await driveUntil(`${throttleSetting} <= 76`, 10000);
+  await cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  const trimmed = await evaluate(throttleSetting);
+  assert.ok(trimmed > 45 && trimmed <= 76);
+  await driveUntil(`Math.abs(${flightAircraft}.throttle - ${trimmed / 100}) < .035`, 10000);
+  assert.equal(await evaluate(throttleSetting), trimmed, 'touch power-down keeps its new setting in the actual flying model');
+  evidence.flight.touchThrottle = { trimmed, actual: (await observe()).flight.aircraft.throttle };
+  assert.ok(cockpitLook(await flightView('rear', () => touchTap('flight-look-rear'))).forward < -0.98);
+  assert.ok(cockpitLook(await flightView('forward', () => touchTap('flight-view-reset'))).forward > 0.98);
+  await selectFlightCamera('chase', true);
+  evidence.flight.touchOrbit = await orbitFlightWithPointer(true);
+  await selectFlightCamera('cockpit', true);
   await touchTap('touch-gear');
   await waitFor('!stuntRacer.observe().flight.aircraft.gearDown');
   await screenshot('13-flight-phone-touch.png');
@@ -387,17 +582,25 @@ async function verifyOriginalFlight() {
   await touchTap('help-button');
   await touchTap('flight-air-start');
   await driveUntil('stuntRacer.observe().phase === "racing" && document.body.dataset.phase === "racing"', 10000);
+  assert.ok(Math.abs((await observe()).flight.aircraft.throttle - .60) < .02, 'original Air Start restores designed thrust');
+  await selectFlightCamera('cockpit', true);
+  const looks = await verifyCockpitFlightViews();
+  const banks = { right: await bankFlight('KeyD', 1), left: await bankFlight('ArrowLeft', -1) };
+  await touchTap('help-button');
+  await touchTap('flight-air-start');
+  await driveUntil('stuntRacer.observe().phase === "racing" && document.body.dataset.phase === "racing"', 10000);
   const beforeTouch = (await observe()).flight.aircraft;
   const pad = await evaluate('(() => {const r=document.querySelector("#touch-steering").getBoundingClientRect();return {x:r.x+r.width*.65,y:r.y+r.height*.33,id:10};})()');
-  const gas = await evaluate('(() => {const r=document.querySelector("[data-control=throttle]").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,id:20};})()');
+  const gas = await evaluate('(() => {const r=document.querySelector("#touch-throttle-up").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,id:20};})()');
   await cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pad, gas] });
   await driveUntil(`stuntRacer.observe().flight.aircraft.forward.y > ${beforeTouch.forward.y + 0.02} &&
     stuntRacer.observe().flight.aircraft.up.x > ${beforeTouch.up.x + 0.03}`, 10000);
   const touch = await observe();
-  await cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [pad, { ...gas, y: gas.y - 42 }] });
+  await releaseTouch(pad, [gas]);
+  await driveUntil(`${throttleSetting} === 100`, 10000);
+  await cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...gas, y: gas.y - 42 }] });
   await driveUntil('stuntRacer.observe().flight.aircraft.afterburner', 10000);
-  await releaseTouch({ ...gas, y: gas.y - 42 }, [pad]);
-  await cdp.call('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+  await cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await driveUntil('!stuntRacer.observe().flight.aircraft.afterburner', 10000);
   const gearDown = (await observe()).flight.aircraft.gearDown;
   await touchTap('touch-gear');
@@ -434,7 +637,7 @@ async function verifyOriginalFlight() {
   await waitFor('stuntRacer.observe().phase === "ready" && stuntRacer.observe().flight.recoveries > 0');
   await cdp.call('Emulation.clearDeviceMetricsOverride');
   await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: false });
-  evidence.originalFlight = { initial, takeoff, deck, catapult, touch, layouts };
+  evidence.originalFlight = { initial, takeoff, deck, catapult, looks, banks, touch, layouts };
   await select('game-mode', 'time-attack');
   await waitFor('stuntRacer.diagnostics().ready && !stuntRacer.observe().flight');
 }
@@ -501,11 +704,13 @@ async function verifyGeographicFlight() {
   assert.match(await evaluate('document.querySelector("#cockpit-mach").textContent'), /^M 0\./);
   assert.equal(await evaluate(layer('#flight-hud-button')), false, 'no nonfunctional chase switch in cockpit');
   await screenshot('59-world-flight-jet-cockpit.png');
+  const looks = await verifyCockpitFlightViews();
   await tap('KeyV');
   await tap('KeyC');
   assert.equal(await evaluate(layer('#flight-guidance')), false, 'cockpit keypress does not change the stored chase setting');
   await click('flight-hud-button');
   assert.equal(await evaluate(layer('#flight-guidance')), true, 'the toolbar switch restores flight data');
+  const orbit = await orbitFlightWithPointer(false);
 
   await depart('rainier', /RAINIER/);
   await waitFor(`${world}.finest >= 6 && ${world}.targetElevation > 4150 && ${world}.visible > 15`, 50000);
@@ -582,7 +787,7 @@ async function verifyGeographicFlight() {
     assert.ok(await evaluate('stuntRacer.diagnostics().flightWorld.sourceObjects >= 400'));
   }
   await chooseExperienceMode('time-attack');
-  evidence.geographicFlight = { seattle, rainier, alaska, hawaii, runwayAltitude: runway.flight.aircraft.y, expanded };
+  evidence.geographicFlight = { seattle, looks, orbit, rainier, alaska, hawaii, runwayAltitude: runway.flight.aircraft.y, expanded };
 }
 
 async function verifyStuntsLoop(mode = 'stunts') {
@@ -1250,7 +1455,9 @@ try {
 } catch (error) {
   if (cdp) {
     try {
-      evidence.failureState = await evaluate('({state:globalThis.stuntRacer?.observe(),diagnostics:globalThis.stuntRacer?.diagnostics(),focused:document.activeElement?.id})');
+      evidence.failureState = await evaluate(`(() => {const toast=document.querySelector("#toast");
+        return {state:globalThis.stuntRacer?.observe(),diagnostics:globalThis.stuntRacer?.diagnostics(),
+          focused:document.activeElement?.id, toast:toast?.textContent, toastHidden:toast?.hidden};})()`);
     } catch (diagnosticError) { console.error(diagnosticError.message); }
   }
   await writeFile(resolve(output, 'failure.json'), JSON.stringify({ error: error.stack, errors, failedRequests, chromeErrors, evidence }, null, 2));

@@ -17,6 +17,7 @@ internal static partial class Program
             ("invalid input / bounded long frames", InputsAndBudget),
             ("render-schedule independence", ScheduleIndependence),
             ("throttle / brake / reverse / boost", DriveAndResources),
+            ("Modern circuit launch and driven turn radius", ModernCircuitHandling),
             ("pause / countdown / restart", PauseAndRestart),
             ("real fall / impacts / recovery penalty", FallAndRecovery),
             ("natural jumps / suspension / ordered three-lap finish", DriveThreeLaps),
@@ -288,6 +289,74 @@ internal static partial class Program
                           $"coast/brake={coasting.Snapshot.Player.Speed:F2}/{braking.Snapshot.Player.Speed:F2}m/s; fuel=.360");
     }
 
+    private static void ModernCircuitHandling()
+    {
+        var full = Launch(1);
+        var partial = Launch(0.55);
+        var right = Corner(0.65);
+        var left = Corner(-0.65);
+        var gentle = Corner(0.32);
+        Console.WriteLine($"  1.5s unboosted full/55%={full.Speed:F3}/{partial.Speed:F3}m/s; " +
+                          $"{right.EntrySpeed:F2}m/s entry, right/left/gentle path radii=" +
+                          $"{right.Radius:F2}/{left.Radius:F2}/{gentle.Radius:F2}m");
+
+        Require(full.Speed is > 14 and < 17 && partial.Speed is > 7.5 and < 10 && full.Speed > partial.Speed + 5,
+            "Modern launch is not noticeably quicker while respecting analog throttle");
+        Require(right.Bend > 0 && left.Bend < 0 && gentle.Bend > 0,
+            "positive steering must bend the traveled path right, negative left");
+        Require(right.Radius is > 18 and < 29 && left.Radius is > 18 and < 29 &&
+                Math.Abs(right.Radius - left.Radius) < 0.1 && gentle.Radius > right.Radius * 1.6,
+            "mid-speed steering is too wide, twitchy, asymmetrical, or loses analog response");
+
+        var straight = NewRace(ScaledCanonicalTrack(6));
+        Run(straight, 12, new DriverInput(0, 1, 0, false));
+        var fast = straight.Snapshot.Player;
+        Require(fast.Grounded && straight.Snapshot.Recoveries == 0 && fast.Speed is > 40 and < 43,
+            $"launch assist changed high-speed unboosted behavior on the long flat: {fast.Speed:F2}m/s");
+        Console.WriteLine($"  long flat, still unboosted: {fast.Speed:F2}m/s after 12s");
+
+        static CarSnapshot Launch(double throttle)
+        {
+            var game = NewRace();
+            Run(game, 1.5, new DriverInput(0, throttle, 0, false));
+            var car = game.Snapshot.Player;
+            Require(car.Grounded && !car.Boosting && car.Boost == 1, "launch probe did not stay on the road without boost");
+            return car;
+        }
+
+        static (double EntrySpeed, double Radius, double Bend) Corner(double steer)
+        {
+            var game = NewRace();
+            for (var tick = 0; tick < 240 && game.Snapshot.Player.Speed < 13; tick++)
+                game.Advance(Step, new DriverInput(0, 1, 0, false));
+            var entrySpeed = game.Snapshot.Player.Speed;
+            Require(entrySpeed is >= 13 and < 13.15, "turn probe did not reach its matched entry speed");
+
+            var a = Sample();
+            var b = Sample();
+            var c = Sample();
+            var ax = b.X - a.X;
+            var az = b.Z - a.Z;
+            var bx = c.X - b.X;
+            var bz = c.Z - b.Z;
+            // Circumradius of three driven positions, independent of body yaw and steering pose.
+            var bend = az * bx - ax * bz;
+            return (entrySpeed, Math.Sqrt((ax * ax + az * az) * (bx * bx + bz * bz) *
+                ((ax + bx) * (ax + bx) + (az + bz) * (az + bz))) / (2 * Math.Abs(bend)), bend);
+
+            CarSnapshot Sample()
+            {
+                for (var tick = 0; tick < 36; tick++)
+                {
+                    game.Advance(Step, new DriverInput(steer, 0, 0, false));
+                    Require(game.Snapshot.Player.Suspension.All(compression => compression > 0),
+                        "turn probe left the road or unloaded a wheel");
+                }
+                return game.Snapshot.Player;
+            }
+        }
+    }
+
     private static void PauseAndRestart()
     {
         var game = new GameSimulation();
@@ -441,21 +510,22 @@ internal static partial class Program
         var corner = NewRace();
         for (var frame = 0; frame < 60 * 18; frame++)
             corner.Advance(1.0 / 60, Drive(corner, false));
+        // Foundry's low-speed power and steering gains intentionally change these Modern traces.
         Check("straight", straight.Snapshot,
-            [-59.999972507484564, 23.00000000000186, -64.50095870632373, 0,
-             -4.55983334159437E-11, 4.4126164586282376E-12, 27.732031721196712, 0, 1, 0,
-             0.5000000001063328, 0.5000000000923115, 0.49999999990112215, 0.49999999988709487,
-             4, 4, 0, 0.06878272778398434, 0]);
+            [-59.99997572763949, 23.000000000001197, -54.20788119549281, 0,
+             -3.9889480860481806E-11, 3.4161337645711545E-12, 30.215348204947716, 0, 1, 0,
+             0.5000000000933477, 0.5000000000823934, 0.49999999991333166, 0.4999999999023774,
+             4, 4, 0, 0.08048516030767028, 0]);
         Check("after crest and bend", corner.Snapshot,
-            [35.427751287995, 23.06529397103063, 173.9519170298889, 2.2198668197390115,
-             -0.005489505566203538, -0.15982870515067157, 19.530441653372968, 0.6053601194711091,
-             1, 0.25294299561495065, 0.481487171934731, 0.4975332930754669, 0.49817509751128014,
-             0.4893496058524475, 18, 18, 0, 0.4365319394536598, 1.4332325808078584E-13]);
+            [41.18881745038335, 23.023432435999457, 168.89599301052098, 2.348588780276507,
+             -0.0030424301939872217, -0.12959063942536564, 19.56045671901202, 0.5478688616521423,
+             1, 0.2528794069844933, 0.47180136073271356, 0.49140987089029775, 0.49406886486931145,
+             0.4817685284718276, 18, 18, 0, 0.4452064614301925, 4.209172638195008E-14]);
         Require(straight.Snapshot.Tick == 840 && corner.Snapshot.Tick == 2520,
             "default golden simulation tick count changed");
         Require(straight.GameMode == "time-attack" && straight.Snapshot.Race is null && straight.Snapshot.PaceCar is null,
             "default Time Attack constructed or updated a rival");
-        Console.WriteLine("  pre-refactor straight + crest/bend goldens: 38 authoritative values within 1e-9");
+        Console.WriteLine("  tuned Foundry straight + crest/bend goldens: 38 authoritative values within 1e-9");
 
         static void Check(string label, GameSnapshot snapshot, double[] expected)
         {
@@ -828,9 +898,9 @@ internal static partial class Program
             Math.Clamp((car.Speed - desiredSpeed - 1) * 0.35, 0, 1), false);
     }
 
-    private static GameSimulation NewRace()
+    private static GameSimulation NewRace(TrackDefinition? track = null)
     {
-        var game = new GameSimulation();
+        var game = new GameSimulation(track);
         game.Command("start");
         Run(game, 3, Idle);
         Require(game.Snapshot.Phase == "racing" && game.Snapshot.Time == 0 && game.Snapshot.Tick == 360,

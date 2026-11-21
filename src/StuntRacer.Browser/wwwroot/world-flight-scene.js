@@ -1,6 +1,6 @@
 import { FlightScene } from './flight-scene.js';
 import { Builder } from './scene.js';
-import { pose, sub } from './engine/math.js';
+import { cross, dot, pose, sub } from './engine/math.js';
 import { triangulate } from './engine/triangulate.js';
 import { fetchWorldJson } from './world-terrain.js';
 
@@ -13,6 +13,108 @@ function ring(mesh, y, radius, depth, colour, sides = 16) {
     const bottomA = at(i, y), bottomB = at(i + 1, y), topA = at(i, y + depth), topB = at(i + 1, y + depth);
     mesh.quad(bottomA, topA, topB, bottomB, colour, 2);
     mesh.triangle([0, y + depth, 0], topB, topA, colour, 2);
+  }
+}
+
+function top(mesh, outline, y, colour, material = 0) {
+  const ring = outline.map(([x, z]) => [x, y, z]);
+  const area = outline.reduce((sum, [x, z], i) => {
+    const [a, b] = outline[(i + 1) % outline.length];
+    return sum + x * b - z * a;
+  }, 0);
+  if (area > 0) ring.reverse();
+  for (const face of triangulate(ring)) mesh.triangle(...face.map(i => ring[i]), colour, material);
+}
+
+function ballpark(mesh) {
+  const grass = [.16, .50, .23], clay = [.67, .34, .18], brick = [.43, .23, .17];
+  const seat = [.08, .27, .29], deck = [.24, .33, .34], chalk = [.95, .89, .73];
+  const home = [0, -50], fieldY = 5, first = [19.4, -30.6], second = [0, -11.2], third = [-19.4, -30.6];
+  const outfield = [[-45, 101], [-32, 113], [-16, 120], [0, 122], [17, 116], [32, 110], [45, 99]]
+    .map(([angle, radius]) => [radius * Math.sin(angle * Math.PI / 180), home[1] + radius * Math.cos(angle * Math.PI / 180)]);
+  const edge = [...outfield, [29, -36], [17, -58], [7, -66], [-7, -66], [-17, -58], [-29, -36]];
+  const podium = edge.map(([x, z]) => [x * 1.48, z * 1.4]);
+  const at = ([x, z], y) => [x, y, z];
+  top(mesh, podium, fieldY - .1, brick);
+  top(mesh, edge, fieldY, grass);
+  for (let i = 0; i < edge.length; i++) {
+    const j = (i + 1) % edge.length;
+    mesh.quad(at(podium[i], -15), at(podium[j], -15), at(podium[j], fieldY), at(podium[i], fieldY), brick, 0);
+    if (i < outfield.length - 1) {
+      const trim = ([x, z]) => [x * .935, home[1] + (z - home[1]) * .935];
+      top(mesh, [edge[i], edge[j], trim(edge[j]), trim(edge[i])], fieldY + .07, clay);
+      if (i % 2 === 0)
+        top(mesh, [[0, 8], trim(edge[i]), trim(edge[j])], fieldY + .035, [.19, .54, .24]);
+    }
+    const row = (n, index, bottom) => {
+      const [x, z] = edge[index], back = index < outfield.length ? .62 : 1;
+      return [x * (1 + n * .12), fieldY + n * 5.2 * back - (bottom ? 1.4 : 0), z * (1 + n * .1)];
+    };
+    for (let tier = 1; tier <= 4; tier++) {
+      mesh.quad(row(tier - 1, i, false), row(tier, i, true),
+        row(tier, j, true), row(tier - 1, j, false), tier % 2 ? seat : deck);
+      mesh.quad(row(tier, i, true), row(tier, i, false), row(tier, j, false), row(tier, j, true), deck);
+    }
+  }
+  top(mesh, [[0, -55], [25, -33], [22, -19], [13, -7], [0, -4], [-13, -7], [-22, -19], [-25, -33]],
+    fieldY + .12, clay);
+  top(mesh, [[0, -45], [14, -30.6], [0, -16.3], [-14, -30.6]], fieldY + .16, grass);
+  top(mesh, Array.from({ length: 10 }, (_, i) =>
+    [4.1 * Math.cos(i * Math.PI / 5), -32 + 4.1 * Math.sin(i * Math.PI / 5)]), fieldY + .22, clay);
+  for (const [x, z] of [home, first, second, third])
+    top(mesh, [[x, z - 1.65], [x + 1.65, z], [x, z + 1.65], [x - 1.65, z]], fieldY + .23, chalk);
+  for (const corner of [outfield[0], outfield.at(-1)]) {
+    const [x, z] = corner;
+    top(mesh, [home, [home[0] + 1.25, home[1]], [x + 1.25, z], corner], fieldY + .25, chalk);
+    mesh.beam([x, fieldY, z], [x, 30, z], .5, [.96, .72, .19], 2);
+  }
+  // The roof is parked beyond the outfield, so the diamond remains open to the sky.
+  for (const x of [-59, 2, 63]) {
+    mesh.box([x, 17, 97], [6, 34, 9], brick);
+    mesh.beam([x, 32, 74], [x, 49, 94], 1.65, metal, 2);
+    mesh.beam([x, 49, 94], [x, 35, 119], 1.65, metal, 2);
+    mesh.beam([x, 33, 75], [x, 33, 118], 1.1, metal, 2);
+  }
+  for (let x = -76; x < 82; x += 16) {
+    mesh.quad([x, 49, 94], [x, 35, 119], [x + 15.6, 35, 119], [x + 15.6, 49, 94], [.68, .75, .77], 2);
+    mesh.quad([x, 32, 74], [x, 49, 94], [x + 15.6, 49, 94], [x + 15.6, 32, 74], [.59, .68, .71], 2);
+  }
+  mesh.box([-42, 23, 71], [28, 12, 3.2], [.095, .15, .16], 2);
+}
+
+function spheres(mesh) {
+  mesh.box([0, -2.5, 0], [25, 8, 63], [.32, .40, .37]);
+  const bands = 8, sides = 12;
+  for (const [x, y, z, radius, height] of [[-2, 11, -23, 12.8, 12], [2, 13.5, 0, 16, 15], [-1, 10.2, 23, 11.6, 11.5]]) {
+    const middle = [x, y, z], joints = [];
+    for (let j = 0; j <= bands; j++) {
+      const angle = Math.PI * (j / bands - .5), slice = Math.cos(angle);
+      for (let k = 0; k < sides; k++) {
+        const azimuth = (k + (j % 2) * .5) * Math.PI * 2 / sides;
+        joints.push([x + radius * slice * Math.cos(azimuth), y + height * Math.sin(angle),
+          z + radius * slice * Math.sin(azimuth)]);
+      }
+    }
+    const ribs = new Set();
+    const panel = (a, b, c, band) => {
+      const p = joints[a], q = joints[b], r = joints[c];
+      const tint = ((a + 11 * b + 7 * c) % 7) * .017;
+      const colour = band < 4 ? [.13 + tint, .39 + tint, .29 + tint / 2] : [.19 + tint, .45 + tint, .52 + tint];
+      const outward = dot(cross(sub(q, p), sub(r, p)), sub(p, middle)) > 0;
+      mesh.triangle(p, ...(outward ? [q, r] : [r, q]), colour, 2);
+      for (const [i, j] of [[a, b], [b, c], [c, a]]) {
+        const key = Math.min(i, j) * joints.length + Math.max(i, j);
+        if (ribs.has(key)) continue;
+        ribs.add(key);
+        mesh.beam(joints[i], joints[j], .19, [.75, .83, .77], 2, 3);
+      }
+    };
+    for (let j = 0; j < bands; j++) for (let k = 0; k < sides; k++) {
+      const a = j * sides + k, b = j * sides + (k + 1) % sides;
+      const c = (j + 1) * sides + (k + j % 2) % sides, d = (j + 1) * sides + (k + j % 2 + sides - 1) % sides;
+      if (j > 0) panel(a, b, c, j);
+      if (j < bands - 1) panel(a, c, d, j);
+    }
   }
 }
 
@@ -54,14 +156,9 @@ function landmarkGeometry({ kind, span }) {
       mesh.beam([sign * 65, 24, -77], [sign * 65, 24, 77], 5.3, metal, 2, 6);
     }
   } else if (kind === 'ballpark') {
-    mesh.box([0, 3, 0], [173, 6, 186], [.36, .27, .23], 2);
-    mesh.box([0, 6.1, 0], [111, .7, 122], [.23, .42, .2]);
-    mesh.box([0, 15, 77], [179, 25, 33], [.45, .28, .23], 2);
-    for (const sign of [-1, 1]) {
-      mesh.box([sign * 74, 14, 0], [26, 19, 122], [.45, .28, .23], 2);
-      mesh.beam([sign * 81, 33, -81], [sign * 81, 33, 85], 1.6, metal, 2);
-    }
-    mesh.quad([-82, 33, -76], [-82, 48, -15], [82, 48, -15], [82, 33, -76], pale, 2);
+    ballpark(mesh);
+  } else if (kind === 'spheres') {
+    spheres(mesh);
   } else if (kind === 'pyramid') {
     const corners = (width, y) => [[-width, y, -width], [-width, y, width], [width, y, width], [width, y, -width]];
     const base = corners(23, 8), upper = corners(2.4, 223);
@@ -161,12 +258,13 @@ export class WorldFlightScene extends FlightScene {
     if (this.cityMesh) frame.draws.push({ mesh: this.cityMesh, shadow: false });
     this.nearbyLandmarks = [];
     for (const { location, mesh } of this.landmarks) {
-      const y = this.terrain.sample(location.x, location.z);
-      if (y !== null && Math.hypot(location.x - aircraft.x, location.z - aircraft.z) < 28000) {
-        this.nearbyLandmarks.push(location.name);
-        frame.draws.push({ mesh, model: pose([location.x, location.kind === 'golden-gate' ? 0 : y - 1, location.z],
-          location.heading ?? 0), shadow: false });
-      }
+      if (Math.hypot(location.x - aircraft.x, location.z - aircraft.z) >= 28000) continue;
+      const y = ['ballpark', 'spheres'].includes(location.kind)
+        ? this.terrain.visualSample(location.x, location.z, 7) : this.terrain.sample(location.x, location.z);
+      if (y === null) continue;
+      this.nearbyLandmarks.push(location.name);
+      frame.draws.push({ mesh, model: pose([location.x, location.kind === 'golden-gate' ? 0 : y - 1, location.z],
+        location.heading ?? (location.kind === 'ballpark' ? 1.09 : 0)), shadow: false });
     }
     for (const draw of frame.draws) {
       const model = draw.model ? draw.model.slice() : pose([0, 0, 0]);
@@ -264,11 +362,14 @@ export class WorldFlightScene extends FlightScene {
       meshCount: this.graphics.meshes.size,
       city: this.city?.id ?? null,
       landmarks: this.nearbyLandmarks ?? [],
+      roadMeshes: this.terrain.roads?.meshCount ?? 0,
     };
   }
 
   dispose() {
     this.buildingLoad?.abort();
     this.terrain.dispose();
+    if (this.cityMesh) this.graphics.releaseMesh(this.cityMesh);
+    for (const { mesh } of this.landmarks) this.graphics.releaseMesh(mesh);
   }
 }
