@@ -145,17 +145,33 @@ Independent contacts allow steering and pedals together; cancellation,
 orientation changes and focus loss release held controls. Portrait, landscape
 and tablet layouts are supported.
 
-In **Flight**, A/D or left/right bank; W/Up pushes the nose down, S/Down pulls
-up. Hold `+`/`-` to adjust the throttle, Space/Shift for afterburner, Q/E for
-rudder, B/Backspace for brakes, and G for gear. Original flight adds K for the
-arrestor hook. On a controller the left stick
-flies, RT/LT change throttle, right-stick X is rudder, A is afterburner, X is
-airbrake, left-stick click toggles gear and LB toggles the original hook.
-On touch, drag the left pad in two
-dimensions (**up to climb**) and hold GAS with the right thumb; sliding up adds
-afterburner. Gear and, in original mode, hook buttons appear beside recovery.
-The cockpit has live attitude, navigation, throttle and fuel instruments; the
-HUD adds a pitch ladder, heading, nearest landing area and gear/hook status.
+In **all flight modes**, **A/D** or **Left/Right** are the ailerons: they bank
+the aircraft in the air. **Q/E** are the separate rudder controls; use them to
+steer while rolling on the runway. **W/Up** pushes the nose down; **S/Down**
+pulls it up. Hold **=/+** or **−** to raise or lower the throttle (numpad +/−
+also work). It stays set on release and through a pause or focus loss. Hold
+**Space/Shift** for afterburner at high power, **B/Backspace** for brakes, and
+press **G** for gear. Original flight adds **K** for the arrestor hook.
+
+On a controller, the left stick banks/pitches, right-stick X is rudder, and
+**RT/LT** set throttle. **A** is afterburner, **X** is airbrake, left-stick
+click toggles gear, and **LB** toggles the original hook. On touch, drag the
+left pad sideways to bank or up to raise the nose. Tap or hold **PWR +/−** to
+set throttle. The percentage shows the selected setting, not the current
+engine response. Hold **BURN** or slide up from **PWR +** for afterburner at
+high power; release to stop it. Brakes, gear and recovery are separate touch
+buttons; original flight adds a hook button.
+
+**C** switches between cockpit and chase; **V** toggles the chase overlay.
+Use the **number row or numpad** for snap views: **4/6** left/right, **2**
+aft, **7/9** forward diagonals, **1/3** rear diagonals, and **5 or 8** to
+center. Cockpit snaps look through the canopy in that direction; chase snaps
+move around the aircraft (aft puts the camera ahead of the nose). In chase,
+drag the scene with a mouse or finger to orbit; **Center View** returns behind
+the aircraft. The touch cockpit also has left, aft and right buttons. Flight
+controls always act relative to the aircraft, not the camera. The pitch
+ladder hides when looking away from center so it is not mistaken for a
+view-aligned instrument.
 
 **REC** records the WebGL canvas and game audio to WebM, downloaded when stopped.
 The HTML HUD is not burned into the recording. It never requests microphone,
@@ -196,10 +212,29 @@ for an existing deployment. `/healthz` is always at the upstream root.
 `POLY_VECTOR_RACER_IMAGE` can select an immutable image digest or a
 `sha-<commit>` tag for repeatable deployment or rollback.
 
-No volume is needed for the base game. For **World Flight**, build the optional
-[terrain package](tools/WorldFlight/README.md) under
-`${DOCKER_DATA}/games/poly-vector-racer/world-flight`, or set `WORLD_FLIGHT_DIR`
-to its actual directory:
+No volume is needed for the base game. For **World Flight**, copy one
+[`world-flight.zip`](tools/WorldFlight/README.md#package-as-a-portable-zip)
+outside the web root. The host serves individual tiles directly from the ZIP;
+there is no extraction step or browser download of the whole archive. With
+the native host built:
+
+```sh
+BASE_URL=/poly-vector-racer STUNT_WORLD_FLIGHT=/absolute/path/world-flight.zip bash scripts/run.sh
+```
+
+With a ZIP-capable container image, bind-mount just that file read-only. It
+must be readable by the container's UID/GID `1000:1000`.
+
+```sh
+WORLD_FLIGHT_ZIP=/absolute/path/world-flight.zip \
+  docker compose -f compose.yaml -f deploy/compose.world-flight-zip.yaml up -d
+```
+
+Existing extracted packages still work. For a native host, set
+`STUNT_WORLD_FLIGHT` to the absolute `manifest.json` path. For Docker, use the
+directory overlay **instead of** the ZIP overlay: put the package under
+`${DOCKER_DATA}/games/poly-vector-racer/world-flight` or set `WORLD_FLIGHT_DIR`
+to its actual absolute directory.
 
 ```sh
 DOCKER_DATA=/absolute/path/to/docker-data \

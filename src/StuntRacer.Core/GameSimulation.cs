@@ -181,16 +181,18 @@ public sealed class GameSimulation : IGameSession
 
     internal void IntegrateVehicle(Racer racer, double dt, DriverInput _input)
     {
-        // Aliases keep the original authoritative integrator's constants and operation order intact.
+        // Keep the shared contact integrator's operation order intact.
         ref var _car = ref racer.Car;
         ref var _groundSeconds = ref racer.GroundSeconds;
         ref var _unstableSeconds = ref racer.UnstableSeconds;
         ref var _safeS = ref racer.SafeS;
+        // City actors share the integrator but keep their established handling.
+        var circuitHandling = _citySurface is null;
         var wasGrounded = _car.Grounded;
         var speed = Math.Sqrt(_car.Vx * _car.Vx + _car.Vz * _car.Vz);
         _car.Steer += Math.Clamp(_input.Steer - _car.Steer, -3.2 * dt, 3.2 * dt);
         var oldForwardSpeed = _car.Vx * Math.Sin(_car.Yaw) + _car.Vz * Math.Cos(_car.Yaw);
-        var maximumYawRate = 1.35 / (1 + speed / 13);
+        var maximumYawRate = MaximumYawRate(_car, speed, oldForwardSpeed, circuitHandling);
         var desiredYawRate = _car.Steer * Math.Clamp(oldForwardSpeed / 12, -1, 1) * maximumYawRate;
         if (!wasGrounded)
             desiredYawRate *= 0.22;
@@ -245,6 +247,8 @@ public sealed class GameSimulation : IGameSession
             _car.Boost = Math.Min(1, _car.Boost + dt * 0.045);
 
         var drive = _input.Throttle * 8.6 * (1 - 0.55 * _car.Damage);
+        if (circuitHandling && contacts > 0)
+            drive *= 1 + 0.26 * LowSpeedResponse(speed);
         if (_input.Brake > 0)
             drive -= _input.Brake * (forwardSpeed > 1 ? 18 : 4.8 * Math.Clamp(1 + forwardSpeed / 9, 0, 1));
         if (_car.Boosting)
@@ -302,6 +306,22 @@ public sealed class GameSimulation : IGameSession
             Recover(racer);
     }
 
+    private static double LowSpeedResponse(double speed)
+    {
+        // Smoothly return to the original high-speed power and steering curves.
+        var t = Math.Clamp((speed - 10) / 16, 0, 1);
+        return 1 - t * t * (3 - 2 * t);
+    }
+
+    private static double MaximumYawRate(in Vehicle car, double speed, double forwardSpeed, bool circuitHandling)
+    {
+        var rate = 1.35 / (1 + speed / 13);
+        if (circuitHandling && forwardSpeed > 0 && car.Grounded &&
+            (car.FL > 0 || car.FR > 0 || car.RL > 0 || car.RR > 0))
+            rate *= 1 + 0.32 * LowSpeedResponse(speed);
+        return rate;
+    }
+
     internal static void ApplyImpact(Racer racer, double severity)
     {
         ref var _car = ref racer.Car;
@@ -325,7 +345,8 @@ public sealed class GameSimulation : IGameSession
         var targetZ = target.Z - Math.Sin(target.Heading) * lane;
         var error = Angle(Math.Atan2(targetX - car.X, targetZ - car.Z) - car.Yaw);
         var rate = 2 * Math.Max(speed, 8) * Math.Sin(error) / look;
-        var scale = Math.Clamp(forwardSpeed / 12, -1, 1) * (1.35 / (1 + speed / 13));
+        var horizontalSpeed = Math.Sqrt(car.Vx * car.Vx + car.Vz * car.Vz);
+        var scale = Math.Clamp(forwardSpeed / 12, -1, 1) * MaximumYawRate(car, horizontalSpeed, forwardSpeed, true);
         var steer = Math.Abs(scale) < 0.03 ? 0 : Math.Clamp(rate / scale, -1, 1);
         var ahead = Track.AtDistance(road.S + 38);
         var bend = Math.Abs(Angle(ahead.Heading - road.Heading));

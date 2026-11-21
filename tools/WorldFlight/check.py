@@ -7,6 +7,8 @@ import math
 import struct
 from pathlib import Path
 
+from roads import MAX_BYTES, validate_roads
+
 SIDE = 33
 N = SIDE * SIDE
 SIZE = 16 + N * 3
@@ -36,6 +38,35 @@ def nearest(folder, region, x, z, spacing):
     raise ValueError(f"No {region['id']} terrain at {x}, {z}")
 
 
+def check_seattle_roads(folder, region, spacing):
+    if "roads" not in region:
+        return
+    path = folder / "seattle-roads.json"
+    if region["id"] != "conus" or not 1 <= path.stat().st_size <= MAX_BYTES:
+        raise ValueError("Invalid World Flight Seattle road region or database size.")
+    counts = validate_roads(region["roads"], json.loads(path.read_text(encoding="utf-8")))
+    west, south, east, north = region["roads"]["bounds"]
+    if (not (-4000 <= west <= -3000 and 3300 <= south <= 4000 and
+             4200 <= east <= 5700 and 14500 <= north <= 15500) or
+            any(counts[kind] < minimum for kind, minimum in
+                (("freeway", 75), ("arterial", 120), ("local", 200), ("bridge", 5)))):
+        raise ValueError(f"Seattle road coverage does not represent the mapped network: {counts}.")
+    for kind, (x0, z0, x1, z1) in {
+        "stadium": (300, 7220, 480, 7470), "ballpark": (180, 6940, 250, 7040),
+        "spheres": (410, 9680, 475, 9740),
+    }.items():
+        sites = [p for p in region["landmarks"] if p["kind"] == kind]
+        if len(sites) != 1 or not (x0 <= sites[0]["x"] <= x1 and z0 <= sites[0]["z"] <= z1):
+            raise ValueError(f"Seattle is missing its separately located {kind}.")
+        site = sites[0]
+        if kind != "stadium" and not .8 < site.get("heading", 0) < 1.4:
+            raise ValueError(f"Seattle {kind} has no surveyed orientation reference.")
+        level, _, wet = nearest(folder, region, site["x"], site["z"], spacing)
+        if level != 8 or wet:
+            raise ValueError(f"Seattle {kind} does not have land in its terrain detail core.")
+    print("seattle roads: " + ", ".join(f"{counts[kind]:,} {kind}" for kind in ("freeway", "arterial", "local", "bridge")))
+
+
 def check(folder):
     manifest = json.loads((folder / "manifest.json").read_text())
     receipt = json.loads((folder / "receipt.json").read_text())
@@ -48,6 +79,7 @@ def check(folder):
                 "cascades": (6, 3000, 3350), "denali": (2, 4600, 6250), "mauna-loa": (2, 3750, 4225)}
     checked = {}
     for region in manifest["regions"]:
+        check_seattle_roads(folder, region, manifest["spacing"])
         windows = []
         for level in range(len(region["coverage"])):
             boxes = rectangles(region, level)

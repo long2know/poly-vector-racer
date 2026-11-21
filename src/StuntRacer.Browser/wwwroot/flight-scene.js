@@ -7,6 +7,9 @@ const steel = [0.31, 0.36, 0.38], dark = [0.045, 0.065, 0.08], orange = [1, 0.27
 const phosphor = [0.23, 0.87, 0.53];
 const pilotEye = [0, 1.59, .89];
 const cockpitFov = 72 * Math.PI / 180;
+const viewSteps = { forward: 0, 'forward-left': -1, 'forward-right': 1, left: -2, right: 2,
+  'rear-left': -3, 'rear-right': 3, rear: 4 };
+const orbitPitchLimit = 50 * Math.PI / 180;
 const displayFrames = [-1, 0, 1].map(side =>
   pose([side * .61, side === 0 ? .81 : .93, 2.45 - Math.abs(side) * .11], .21 * side, -.24));
 
@@ -288,7 +291,23 @@ export class FlightScene {
     this.flame = graphics.mesh(flame);
     this.walkerRig = makeWalkerRig(graphics);
     this.serviceCar = makeServiceCar(graphics);
-    this.orbit = 0;
+    this.previewTime = 0;
+    this.setFlightView('forward');
+  }
+
+  setFlightView(view) {
+    if (!Object.hasOwn(viewSteps, view)) throw new Error(`Unknown flight view: ${view}`);
+    this.flightView = view;
+    this.viewYaw = viewSteps[view] * Math.PI / 4;
+    this.viewPitch = 0;
+    this.eye = null;
+  }
+
+  orbitFlightView(dx, dy) {
+    const yaw = this.viewYaw + dx * .007;
+    this.viewYaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+    this.viewPitch = clamp(this.viewPitch - dy * .007, -orbitPitchLimit, orbitPitchLimit);
+    this.flightView = 'orbit';
   }
 
   update(state, dt, mode = 'chase') {
@@ -342,23 +361,37 @@ export class FlightScene {
         model: multiply(matrix, pose([0, 2.4 - this.world.gearClearance, 0])) });
       if (aircraft.afterburner) draws.push({ mesh: this.flame, model: matrix, shadow: false });
     }
-    this.orbit += dt;
+    this.previewTime += dt;
     let eye, target, cameraUp = [0, 1, 0];
+    const preview = ready && (!destination || aircraft.onGround);
     if (cockpit) {
       eye = transform(matrix, pilotEye);
-      target = add(eye, scale(forward, 180));
+      const right = normalize(cross(up, forward));
+      target = add(eye, scale(add(scale(forward, Math.cos(this.viewYaw)), scale(right, Math.sin(this.viewYaw))), 180));
       cameraUp = up;
-    } else if (ready && (!destination || aircraft.onGround)) {
-      const angle = aircraft.yaw + 0.7 + Math.sin(this.orbit * 0.15) * 0.1;
+    } else if (preview) {
+      const angle = aircraft.yaw + 0.7 + Math.sin(this.previewTime * 0.15) * 0.1;
       eye = add(position, [-Math.sin(angle) * 22, 9, -Math.cos(angle) * 22]);
       target = add(position, [0, 0.5, 0]);
     } else {
-      eye = add(add(position, scale(forward, -26 - Math.min(aircraft.speed * 0.025, 10))), scale(up, 8));
-      target = add(position, scale(forward, 25));
-      if (Math.abs(forward[1]) > 0.93) cameraUp = up;
+      // Orbit about the aircraft's heading, not its bank: a roll must not bring the camera under the runway.
+      const distance = 26 + Math.min(aircraft.speed * 0.025, 10);
+      const radius = Math.hypot(distance, 8);
+      const clearance = aircraft.onGround ? 2 : this.world.seaHeight + 1 - aircraft.y;
+      const baseElevation = Math.atan2(8, distance);
+      const minimumElevation = Math.asin(clamp(clearance / radius, -1, .95));
+      if (aircraft.onGround && this.flightView === 'orbit')
+        this.viewPitch = Math.max(this.viewPitch, minimumElevation - baseElevation);
+      const elevation = Math.max(baseElevation + this.viewPitch, minimumElevation);
+      const angle = aircraft.yaw - this.viewYaw, flat = radius * Math.cos(elevation);
+      eye = add(position, [-Math.sin(angle) * flat, radius * Math.sin(elevation), -Math.cos(angle) * flat]);
+      const ahead = 25 * Math.max(0, Math.cos(this.viewYaw)) * (1 - Math.abs(this.viewPitch) / orbitPitchLimit);
+      target = add(position, [Math.sin(aircraft.yaw) * ahead, 0, Math.cos(aircraft.yaw) * ahead]);
     }
-    const activeMode = ready && (!destination || aircraft.onGround) ? 'orbit' : mode;
-    if (!this.eye || this.mode !== activeMode || cockpit) { this.eye = eye; this.target = target; }
+    const activeMode = preview ? 'preview' : cockpit ? 'cockpit' : aircraft.onGround ? 'chase-ground' : 'chase';
+    if (!this.eye || this.mode !== activeMode || cockpit || !preview && this.flightView !== 'forward') {
+      this.eye = eye; this.target = target;
+    }
     else {
       const blend = 1 - Math.exp(-dt * 8);
       this.eye = lerp3(this.eye, eye, blend);

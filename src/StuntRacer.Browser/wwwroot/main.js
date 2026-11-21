@@ -11,10 +11,12 @@ import { CityScene } from './city-scene.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game'), audio = new RacingAudio(), capture = new GameplayCapture();
+const drivingCanvasLabel = canvas.getAttribute('aria-label');
 const emptyInput = { steer: 0, throttle: 0, brake: 0, boost: false };
 let graphics, scene, input, api, runtime, state, frame, previousTime, failed = false, disposed = false;
 let camera = 'chase', ready = false, toastTimer, starting = false, showStats = false, soundBlocked = false;
 let chaseHud = true;
+let flightDrag = null;
 let airTime = 0, fps = 0, fpsTime = performance.now(), fpsFrames = 0, cpuMs = 0, lastPhase;
 let callbacks = 0, lastCallbacks = 0, lastSubmitted = 0, lastSkipped = 0;
 let callbackRate = 0, submittedRate = 0, skippedRate = 0, simulationMs = 0, submissionMs = 0;
@@ -93,6 +95,8 @@ function fail(error) {
   audio.silence();
   capture.stop();
   input?.clear();
+  endFlightDrag();
+  $('flight-view-controls').hidden = true;
   document.body.dataset.phase = 'error';
   $('error-panel').hidden = false;
   $('start-button').disabled = true;
@@ -118,6 +122,8 @@ function phaseChanged() {
   $('hud').hidden = state.phase === 'ready';
   $('pause-panel').hidden = state.phase !== 'paused';
   $('finish-panel').hidden = state.phase !== 'finished';
+  if (flightPlaying()) updateFlightView();
+  else resetFlightView();
   if (state.phase === 'finished') {
     if (state.city) {
       const city = state.city, circuit = city.mode === 'city-circuit';
@@ -314,6 +320,7 @@ function updateFlightHud() {
   text('boost-label', aircraft.afterburner ? 'AFTERBURNER' : 'THROTTLE');
   text('boost-value', `${display?.thrustPercent ?? Math.round(aircraft.throttle * 100)}%`);
   $('boost-fill').style.transform = `scaleX(${aircraft.throttle})`;
+  text('touch-throttle-setting', `${Math.round(input.flightThrottle * 100)}%`);
   text('integrity-label', 'FUEL REMAINING');
   text('integrity-value', `${Math.round(aircraft.fuel * 100)}%`);
   $('integrity-fill').style.transform = `scaleX(${aircraft.fuel})`;
@@ -335,7 +342,7 @@ function updateFlightHud() {
     if (path !== $('map-water').getAttribute('d')) $('map-water').setAttribute('d', path);
   }
   text('race-event', state.phase !== 'racing' ? '' : aircraft.stalled ? 'STALL / LOWER NOSE, ADD POWER'
-    : aircraft.onGround ? 'RUNWAY / POWER UP, THEN PULL BACK'
+    : aircraft.onGround ? 'GROUND / RUDDER STEERS; POWER UP, THEN PULL BACK'
       : aircraft.fuel < 0.15 ? 'LOW FUEL' : aircraft.mach >= 1 ? 'SUPERSONIC'
         : aircraft.afterburner ? 'AFTERBURNER' : '');
   text('countdown', state.phase === 'countdown' ? String(Math.max(1, Math.ceil(state.countdown))) : '');
@@ -351,6 +358,34 @@ function updateFlightHudMode() {
   button.hidden = !flightChase;
   button.setAttribute('aria-pressed', String(chaseHud));
   text('flight-hud-button', chaseHud ? 'HUD ON' : 'HUD OFF');
+}
+
+function flightPlaying() {
+  return Boolean(state?.flight) && (state.phase === 'racing' || state.phase === 'countdown');
+}
+
+function endFlightDrag(event) {
+  if (!flightDrag || event?.pointerId != null && event.pointerId !== flightDrag.id) return;
+  const { id } = flightDrag;
+  flightDrag = null;
+  canvas.classList.remove('orbiting');
+  if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
+}
+
+function updateFlightView() {
+  const view = state?.flight ? scene.flightView : 'forward';
+  document.body.dataset.flightView = view;
+  $('flight-view-controls').hidden = !flightPlaying();
+  text('flight-view-reset', view === 'forward' ? 'CENTER VIEW' : `${view.replace('-', ' ').toUpperCase()} / CENTER`);
+  canvas.title = !state?.flight ? '' : camera === 'chase'
+    ? 'Drag to orbit the aircraft. Press 5 to center the view.'
+    : 'Use the number keys to look around. Press 5 to look forward.';
+}
+
+function resetFlightView() {
+  endFlightDrag();
+  if (state?.flight) scene.setFlightView('forward');
+  updateFlightView();
 }
 
 async function unlockAudio() {
@@ -376,6 +411,7 @@ async function startRun(restart = false) {
       state = JSON.parse(api.Observe());
       phaseChanged();
       input.setFlightThrottle(state.flight.aircraft.throttle);
+      resetFlightView();
     }
     previousTime = undefined;
     canvas.focus({ preventScroll: true });
@@ -384,7 +420,7 @@ async function startRun(restart = false) {
   }
 }
 
-async function action(name) {
+async function action(name, value) {
   if (failed || disposed) return;
   if (name === 'help') {
     if ($('help-dialog').open) $('help-dialog').close();
@@ -424,6 +460,7 @@ async function action(name) {
     state = JSON.parse(api.Observe());
     previousTime = undefined;
     phaseChanged();
+    if (state.flight) input.setFlightThrottle(state.flight.aircraft.throttle);
     updateModeLabels();
     text('start-label', startLabel());
     if ($('help-dialog').open) $('help-dialog').close();
@@ -434,6 +471,12 @@ async function action(name) {
     document.body.dataset.camera = camera;
     $('camera-button').childNodes[0].nodeValue = `${camera.toUpperCase()} `;
     updateFlightHudMode();
+    resetFlightView();
+    canvas.focus({ preventScroll: true });
+  } else if (name === 'flight-view' && flightPlaying()) {
+    endFlightDrag();
+    scene.setFlightView(value);
+    updateFlightView();
     canvas.focus({ preventScroll: true });
   } else if (name === 'flight-hud' && state.flight && camera === 'chase') {
     chaseHud = !chaseHud;
@@ -452,6 +495,7 @@ async function action(name) {
     if (state.flight) {
       state = JSON.parse(api.Observe());
       phaseChanged();
+      input.clear();
       input.setFlightThrottle(state.flight.aircraft.throttle);
       toast(scene.terrain ? 'Returned to the selected departure.' : 'Aircraft recovered to the runway.', 2500);
     } else toast('Car recovered. A time penalty was added to your run.', 2500);
@@ -473,6 +517,7 @@ async function action(name) {
     phaseChanged();
     input.clear();
     input.setFlightThrottle(state.flight.aircraft.throttle);
+    resetFlightView();
     previousTime = undefined;
     if ($('help-dialog').open) $('help-dialog').close();
     if (name === 'landmark-tour') toast('Original bridge scenery ahead. Source world geometry / enhanced ambient activity.', 7000);
@@ -518,9 +563,20 @@ function configureTrack(track) {
   document.body.dataset.camera = camera;
   updateFlightHudMode();
   input.setMode(flying ? 'flight' : 'racing', state.flight?.aircraft.throttle ?? 0);
-  text('steer-label', flying ? 'BANK / PULL UP' : 'DRAG TO STEER');
-  text('touch-gas-hint', flying ? 'SLIDE UP FOR AFTERBURNER' : 'SLIDE UP FOR TURBO');
-  $('touch-steering').setAttribute('aria-label', flying ? 'Drag left or right to bank; drag up to climb' : 'Drag horizontally to steer');
+  resetFlightView();
+  canvas.setAttribute('aria-label', flying
+    ? '3D flight game. A and D bank, Q and E steer the rudder, plus and minus set throttle. Use 5 to center the view. Open Controls for all options.'
+    : drivingCanvasLabel);
+  $('hud').setAttribute('aria-label', flying ? 'Flight dashboard' : 'Race dashboard');
+  $('pause-button').setAttribute('aria-label', flying ? 'Pause flight' : 'Pause race');
+  $('touch-controls').setAttribute('aria-label', flying ? 'Touch flight controls' : 'Touch driving controls');
+  text('steer-label', flying ? 'AILERON / PITCH' : 'DRAG TO STEER');
+  $('touch-steering').setAttribute('aria-label', flying ? 'Drag left or right to bank; drag up to raise the nose' : 'Drag horizontally to steer');
+  for (const side of ['left', 'right'])
+    document.querySelector(`[data-control="${side}"]`).setAttribute('aria-label', `${flying ? 'Bank' : 'Steer'} ${side}`);
+  const boostButton = document.querySelector('[data-control="boost"]');
+  if (flying) boostButton.setAttribute('aria-label', 'BURN (afterburner)');
+  else boostButton.removeAttribute('aria-label');
   if (compatibility.physicsProfile === 'authored' || state.stunt) {
     api.Command(ghostEnabled ? 'ghost-on' : 'ghost-off');
     state = JSON.parse(api.Observe());
@@ -878,6 +934,7 @@ function replaceTrack(track) {
     cancelAnimationFrame(frame);
     audio.silence();
     input.clear();
+    endFlightDrag();
     scene?.dispose?.();
     graphics.dispose();
     graphics = new Graphics(canvas);
@@ -940,7 +997,9 @@ function tick(now) {
     if (!state.player || !Number.isFinite(state.player.x) || !Number.isFinite(state.player.speed)) {
       throw new Error('The C# simulation returned an invalid vehicle snapshot.');
     }
-    const { draws, camera: view } = scene.update(state, Math.min(dt, 0.1), camera, compatibility);
+    const renderDt = Math.min(dt, 0.1);
+    const { draws, camera: view } = state.flight ? scene.update(state, renderDt, camera)
+      : scene.update(state, renderDt, camera, compatibility);
     const submissionStart = performance.now();
     graphics.render(draws, view, now / 1000);
     submissionMs = submissionMs * 0.95 + (performance.now() - submissionStart) * 0.05;
@@ -1002,6 +1061,9 @@ function bind() {
   }
   on('camera-button', 'camera');
   on('flight-hud-button', 'flight-hud');
+  for (const button of $('flight-view-controls').querySelectorAll('button')) {
+    button.addEventListener('click', () => { void action('flight-view', button.dataset.view).catch(fail); });
+  }
   on('sound-button', 'mute');
   on('fullscreen-button', 'fullscreen');
   on('help-button', 'help');
@@ -1245,6 +1307,27 @@ function bind() {
     event.preventDefault();
     fail(new Error('The WebGL context was lost. Reload to recreate GPU resources.'));
   });
+  canvas.addEventListener('pointerdown', event => {
+    if (!ready || trackBusy || !flightPlaying() || camera !== 'chase' || flightDrag || event.button !== 0) return;
+    event.preventDefault();
+    flightDrag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+    canvas.classList.add('orbiting');
+    canvas.focus({ preventScroll: true });
+  });
+  canvas.addEventListener('pointermove', event => {
+    if (event.pointerId !== flightDrag?.id) return;
+    if (event.pointerType === 'mouse' && !(event.buttons & 1)) { endFlightDrag(event); return; }
+    const dx = event.clientX - flightDrag.x, dy = event.clientY - flightDrag.y;
+    flightDrag.x = event.clientX;
+    flightDrag.y = event.clientY;
+    if (!dx && !dy) return;
+    scene.orbitFlightView(dx, dy);
+    if (document.body.dataset.flightView !== scene.flightView) updateFlightView();
+  });
+  for (const name of ['pointerup', 'pointercancel', 'lostpointercapture'])
+    canvas.addEventListener(name, endFlightDrag);
+  window.addEventListener('resize', endFlightDrag);
   document.addEventListener('fullscreenchange', () => {
     $('fullscreen-button').setAttribute('aria-pressed', String(Boolean(document.fullscreenElement)));
   });
@@ -1265,6 +1348,7 @@ function bind() {
     disposed = true;
     cancelAnimationFrame(frame);
     capture.stop();
+    endFlightDrag();
     input?.dispose();
     scene?.dispose?.();
     graphics?.dispose();
@@ -1277,10 +1361,12 @@ async function boot() {
   startupDeadline = setTimeout(() => fail(new Error(
     'The WebAssembly engine did not finish loading. Check the connection and reload the game.')), 60000);
   graphics = new Graphics(canvas);
-  input = new Input(canvas, name => { void action(name).catch(fail); }, pad => {
+  input = new Input(canvas, (name, value) => { void action(name, value).catch(fail); }, pad => {
     updateInputLabel();
     if (pad) {
-      toast(pad.mapping === 'standard' ? 'Controller connected. RT accelerates, LT brakes, A boosts.'
+      toast(pad.mapping === 'standard' ? state?.flight
+        ? 'Controller connected. Left stick banks and pitches; RT/LT set throttle.'
+        : 'Controller connected. RT accelerates, LT brakes, A boosts.'
         : 'Controller detected. Open controls and choose Classic joystick if its mapping is non-standard.');
     }
   });
@@ -1332,6 +1418,8 @@ async function boot() {
       audioState: audio.context?.state ?? 'locked', audioRms: audio.level(),
       audioEvents: audio.events, muted: audio.muted, camera,
       flightHud: document.body.dataset.flightHud !== 'off',
+      flightCamera: state.flight && scene.eye ? { view: scene.flightView,
+        eye: scene.eye.slice(), target: scene.target.slice() } : null,
       controller: input.connected, recording: capture.recorder?.state ?? 'inactive',
       vehicleStyle,
       track: { name: scene.track.name, length: scene.track.length, points: scene.track.points.length },
