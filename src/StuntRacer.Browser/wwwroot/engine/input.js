@@ -30,6 +30,7 @@ export function readFlightGamepad(pad) {
     pause: button(9) > 0.5, recover: button(1) > 0.5, camera: button(3) > 0.5,
     gear: button(10) > 0.5,
     hook: button(4) > 0.5,
+    scan: button(11) > 0.5,
   };
 }
 
@@ -37,7 +38,8 @@ const drivingKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight']);
 const flightKeys = new Set(['KeyQ', 'KeyE', 'KeyB', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'Backspace']);
 const actions = { KeyC: 'camera', KeyR: 'recover', KeyP: 'pause', Escape: 'pause',
-  KeyM: 'mute', KeyF: 'fullscreen', Enter: 'start', KeyH: 'help', KeyG: 'gear', KeyK: 'hook', KeyV: 'flight-hud', F3: 'stats' };
+  KeyM: 'mute', KeyF: 'fullscreen', Enter: 'start', KeyH: 'help', KeyG: 'gear', KeyK: 'hook', KeyV: 'flight-hud',
+  KeyT: 'scan', F3: 'stats' };
 const flightViews = ['rear-left', 'rear', 'rear-right', 'left', 'forward', 'right', 'forward-left', 'forward', 'forward-right'];
 const throttleTrim = { 'throttle-up': 1, 'throttle-down': -1 };
 const boostsOnSlide = control => control === 'throttle' || control === 'throttle-up';
@@ -52,6 +54,7 @@ export class Input {
   steeringPointer = null;
   touchEnabled = true;
   mode = 'racing';
+  scanEnabled = false;
   flightThrottle = 0;
   pendingTouchTrim = 0;
   previous = {};
@@ -77,6 +80,7 @@ export class Input {
       }
       const action = actions[event.code];
       if (action === 'flight-hud' && this.mode !== 'flight') return;
+      if (action === 'scan' && (!this.scanEnabled || event.altKey || event.ctrlKey || event.metaKey)) return;
       if (drivingKeys.has(event.code) || action ||
           this.mode === 'flight' && flightKeys.has(event.code)) event.preventDefault();
       this.keys.add(event.code);
@@ -184,9 +188,10 @@ export class Input {
     if (!this.touchEnabled) this.clearTouch();
   }
 
-  setMode(mode, throttle = 0) {
+  setMode(mode, throttle = 0, training = false) {
     if (!['racing', 'flight'].includes(mode)) throw new Error(`Unknown input mode: ${mode}`);
     this.mode = mode;
+    this.scanEnabled = mode === 'flight' && training;
     this.setFlightThrottle(throttle);
     this.clear();
   }
@@ -217,13 +222,15 @@ export class Input {
       const active = Math.abs(gamepad.steer) + gamepad.throttle + gamepad.brake
         + Number(gamepad.boost) + Number(gamepad.pause) + Number(gamepad.recover) + Number(gamepad.camera);
       const flightActive = this.mode === 'flight'
-        ? Math.abs(gamepad.pitch) + Math.abs(gamepad.yaw) + Number(gamepad.gear) + Number(gamepad.hook) + Number(gamepad.airBrake) : 0;
+        ? Math.abs(gamepad.pitch) + Math.abs(gamepad.yaw) + Number(gamepad.gear) + Number(gamepad.hook)
+          + Number(gamepad.airBrake) + Number(this.scanEnabled && gamepad.scan) : 0;
       if (active + flightActive < 0.001) this.blocked = false;
       else gamepad = this.mode === 'flight' ? readFlightGamepad(null) : readGamepad(null);
     }
     for (const action of this.mode === 'flight' ? ['pause', 'recover', 'camera', 'gear', 'hook'] : ['pause', 'recover', 'camera']) {
       if (gamepad[action] && !this.previous[action]) this.onAction(action);
     }
+    if (this.scanEnabled && gamepad.scan && !this.previous.scan) this.onAction('scan');
     this.previous = gamepad;
     const held = (...codes) => codes.some(code => this.keys.has(code));
     let steer = Number(held('ArrowRight', 'KeyD') || this.touches.has('right'))

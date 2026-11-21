@@ -12,10 +12,8 @@ public sealed class FlightSimulation : IFlightSession
     private const double Mass = 10_000;
     private const double WingArea = 34;
     private const double TrimAngle = 0.06;
-    private const double DryThrust = 68_000;
-    private const double WetThrust = 112_000;
     private const double MaximumSpeed = 450;
-    private const double WorldMachLimit = 1.8;
+    private const string DefaultAircraftId = "f18";
     private readonly FixedStepClock _clock = new(1.0 / 120.0, 0.25);
     private readonly bool _worldJet;
     private FlightVec _position;
@@ -45,17 +43,39 @@ public sealed class FlightSimulation : IFlightSession
     private string _resumeMessage = "";
     private bool _terrainWaiting;
 
+    public static IReadOnlyList<FlightAircraftProfile> WorldAircraft { get; } =
+        Array.AsReadOnly<FlightAircraftProfile>(
+        [
+            new(DefaultAircraftId, "F/A-18", 1.8, new(68_000, 112_000, BoostAcceleration: 8.5,
+                RollAuthority: 1.5, FastRollReduction: 0.65, FastPitchAuthority: 0.095)),
+            new("f14", "F-14", 2.1, new(72_000, 120_000, BoostAcceleration: 9.6,
+                RollAuthority: 1.32, FastRollReduction: 0.62, FastPitchAuthority: 0.085)),
+            new("f15", "F-15", 2.4, new(82_000, 142_000, BoostAcceleration: 11,
+                RollAuthority: 1.72, FastRollReduction: 0.70, FastPitchAuthority: 0.09)),
+            new("sr71", "SR-71 Blackbird", 3.2, new(64_000, 112_000, BoostAcceleration: 7.2,
+                RollAuthority: 1.10, FastRollReduction: 0.58, FastPitchAuthority: 0.045, HighAltitudeBoost: 13))
+        ]);
+
     public FlightSimulation() : this(FlightWorldDefinition.Default) { }
-    public FlightSimulation(FlightWorldDefinition world)
+    public FlightSimulation(FlightWorldDefinition world) : this(world, DefaultAircraftId) { }
+
+    public FlightSimulation(FlightWorldDefinition world, string aircraftId)
     {
         World = world ?? throw new ArgumentNullException(nameof(world));
         if (world.SourceWorld is not null)
             throw new ArgumentException("Use the original player session for original disk worlds.", nameof(world));
+        ArgumentNullException.ThrowIfNull(aircraftId);
+        var id = aircraftId == "default" ? DefaultAircraftId : aircraftId;
+        Aircraft = WorldAircraft.FirstOrDefault(profile => profile.Id == id)
+            ?? throw new ArgumentException($"Unknown World Flight aircraft '{aircraftId}'.", nameof(aircraftId));
         _worldJet = world.Geography is not null;
+        if (!_worldJet && Aircraft.Id != DefaultAircraftId)
+            throw new ArgumentException("Alternate aircraft are only available in World Flight.", nameof(aircraftId));
         PlaceOnRunway();
     }
 
     public FlightWorldDefinition World { get; }
+    public FlightAircraftProfile Aircraft { get; }
     public bool TerrainWaiting => _terrainWaiting;
     public FlightSnapshot Snapshot => CreateSnapshot();
 
@@ -211,9 +231,16 @@ public sealed class FlightSimulation : IFlightSession
         _fuel = Math.Max(0, _fuel - burnRate * dt);
         if (_fuel == 0)
             _afterburner = false;
-        var thrust = _fuel > 0 ? _throttle * (_afterburner ? WetThrust : DryThrust) / Mass : 0;
+        var tuning = Aircraft.Tuning;
+        var thrust = _fuel > 0 ? _throttle * (_afterburner ? tuning.WetThrust : tuning.DryThrust) / Mass : 0;
         if (_afterburner && _worldJet && !_onGround)
-            thrust += _throttle * 8.5 * Smooth(100, 235, speed);
+        {
+            var boost = tuning.BoostAcceleration;
+            // Extra cruise thrust blends in aloft with the gear retracted.
+            if (tuning.HighAltitudeBoost > 0 && !_gearDown)
+                boost += tuning.HighAltitudeBoost * Smooth(2500, 7500, _position.Y);
+            thrust += _throttle * boost * Smooth(100, 235, speed);
+        }
 
         // Angle-dependent airfoil lift falls away beyond the authored stall angle. The
         // direction is perpendicular to velocity, so banking redirects lift into a turn.
@@ -267,7 +294,7 @@ public sealed class FlightSimulation : IFlightSession
         }
 
         var oldVelocity = _velocity;
-        _velocity = (_velocity + acceleration * dt).Limit(_worldJet ? soundSpeed * WorldMachLimit : MaximumSpeed);
+        _velocity = (_velocity + acceleration * dt).Limit(_worldJet ? soundSpeed * Aircraft.MaximumMach : MaximumSpeed);
         if (_onGround)
         {
             _velocity = _velocity with { Y = 0 };
@@ -316,12 +343,13 @@ public sealed class FlightSimulation : IFlightSession
         // A slow aircraft still falls; these are damped aerodynamic controls, not rails.
         var targetPitch = (input.Pitch * 0.72 + (TrimAngle - alpha) * 0.9) * authority;
         var targetYaw = (input.Yaw * 0.44 + sideslip * 0.6) * authority;
-        var rollAuthority = 1.5;
+        var tuning = Aircraft.Tuning;
+        var rollAuthority = tuning.RollAuthority;
         if (fast > 0)
         {
             var pathAngle = Math.Asin(Math.Clamp(_velocity.Y / speed, -1, 1));
             var liftUp = Math.Clamp(_up.Y, 0.48, 1);
-            var pathRate = input.Pitch * 0.095 - pathAngle * 0.14 * (1 - Math.Abs(input.Pitch));
+            var pathRate = input.Pitch * tuning.FastPitchAuthority - pathAngle * 0.14 * (1 - Math.Abs(input.Pitch));
             var targetLift = Math.Clamp((Gravity * Math.Cos(pathAngle) + speed * pathRate) / liftUp, -3 * Gravity, 7 * Gravity);
             var targetAlpha = (targetLift * Mass / pressureArea - 0.24) / 4.7;
             var lift = Math.Clamp(pressureArea * Math.Clamp(0.24 + 4.7 * alpha, -1.45, 1.7) / Mass, -8.5 * Gravity, 8.5 * Gravity);
@@ -329,7 +357,7 @@ public sealed class FlightSimulation : IFlightSession
             var speedPitch = Math.Clamp(currentPathRate + 2.8 * (targetAlpha - alpha), -.55, .55);
             targetPitch += (speedPitch - targetPitch) * fast;
             targetYaw *= 1 - 0.5 * fast;
-            rollAuthority -= 0.65 * fast;
+            rollAuthority -= tuning.FastRollReduction * fast;
         }
         _rollRate += (input.Roll * rollAuthority * authority - _rollRate) * response;
         _pitchRate += (targetPitch - _pitchRate) * response;

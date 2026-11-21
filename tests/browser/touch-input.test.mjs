@@ -49,6 +49,36 @@ function pointer(element, type, id, x = 80, y = 200) {
     { pointerId: id, clientX: x, clientY: y }));
 }
 
+test('only training captures scan keys and right-stick clicks, once per press', () => {
+  withTouch((input, _buttons, _pad, _thumb, { actions, setGamepad }) => {
+    const key = properties => window.dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }),
+      { code: 'KeyT', ...properties }));
+    const pad = clicked => ({ index: 0, id: 'Scan controller', connected: true, axes: [0, 0, 0],
+      buttons: Array.from({ length: 17 }, (_, i) => ({ value: i === 11 && clicked ? 1 : 0 })) });
+    input.setMode('flight');
+    input.sample();
+    assert.equal(key(), true, 'normal flight does not capture T');
+    setGamepad(pad(true));
+    input.sample();
+    assert.deepEqual(actions, []);
+
+    input.setMode('flight', .35, true);
+    input.sample();
+    assert.deepEqual(actions, [], 'a held stick click cannot carry into training');
+    setGamepad(pad(false));
+    input.sample();
+    setGamepad(pad(true));
+    input.sample();
+    input.sample();
+    assert.equal(key({ ctrlKey: true }), true, 'browser Ctrl+T stays available');
+    assert.equal(key(), false);
+    key({ repeat: true });
+    assert.deepEqual(actions, [['scan'], ['scan']], 'one scan per gamepad or keyboard press');
+    input.setMode('racing');
+    assert.equal(key(), true, 'driving does not capture T');
+  });
+});
+
 test('two thumbs can steer and accelerate, with slide-up turbo and independent release', () => {
   withTouch((input, buttons, pad) => {
     pointer(pad, 'pointerdown', 1, 15, 20);

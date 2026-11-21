@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FlightScene, aircraftFrame, flightReadouts } from '../../src/StuntRacer.Browser/wwwroot/flight-scene.js';
-import { WorldFlightScene } from '../../src/StuntRacer.Browser/wwwroot/world-flight-scene.js';
+import { WorldFlightScene, WorldScenery } from '../../src/StuntRacer.Browser/wwwroot/world-flight-scene.js';
 import { cross, dot, lookAt, normalize, pose, sub, transform } from '../../src/StuntRacer.Browser/wwwroot/engine/math.js';
 
 const world = {
@@ -94,6 +94,57 @@ test('gear, afterburner and cockpit draw actual jet geometry and vertical flight
     'the sea must remain beneath long free flights instead of ending at the starting-area mesh bounds');
 });
 
+function points(mesh) {
+  const result = [];
+  for (let i = 0; i < mesh.vertices.length; i += 10) result.push(mesh.vertices.slice(i, i + 3));
+  return result;
+}
+
+test('aircraft selection changes swept wings, twin tails and length without moving the pilot', () => {
+  const graphics = { mesh: mesh => mesh };
+  const stock = new FlightScene(graphics, world);
+  const byId = Object.fromEntries([['f18', 2.4], ['f14', 2.1], ['f15', 2.4], ['sr71', 3.2]]
+    .map(([id, gearClearance]) => [id, new FlightScene(graphics, { ...world, gearClearance }, id)]));
+  assert.deepEqual(byId.f18.jet.vertices, stock.jet.vertices, 'the default Hornet keeps its authored geometry');
+  const silhouette = scene => {
+    const shape = points(scene.jet), halfSpan = Math.max(...shape.map(p => Math.abs(p[0])));
+    return { halfSpan, length: Math.max(...shape.map(p => p[2])) - Math.min(...shape.map(p => p[2])),
+      tipLead: Math.max(...shape.filter(p => p[0] > halfSpan * .92).map(p => p[2])),
+      tails: new Set(shape.filter(p => p[1] > 3 && p[2] < -4).map(p => Math.sign(p[0]))) };
+  };
+  const [hornet, tomcat, eagle, blackbird] = Object.values(byId).map(silhouette);
+  assert.ok(tomcat.halfSpan > eagle.halfSpan && eagle.halfSpan > hornet.halfSpan + 1);
+  assert.ok(tomcat.tipLead < eagle.tipLead - 2.5, 'Tomcat outer wing is swept farther aft than the Eagle');
+  assert.ok(blackbird.length > tomcat.length * 1.5 && blackbird.length > eagle.length * 1.5);
+  for (const shape of [tomcat, eagle, blackbird]) assert.deepEqual(shape.tails, new Set([-1, 1]));
+
+  const state = { phase: 'racing', flight: { aircraft: { ...aircraft, afterburner: true, up: { x: 0, y: 1, z: 0 } } } };
+  const hornetChase = stock.update(state, 0).camera.eye;
+  const hornetCockpit = stock.update(state, 0, 'cockpit').camera.eye;
+  for (const scene of [byId.f14, byId.f15, byId.sr71]) {
+    const frame = scene.update(state, 0);
+    for (const mesh of [scene.jet, scene.canopy, scene.gear, scene.flame])
+      assert.ok(frame.draws.some(draw => draw.mesh === mesh));
+    const gearModel = frame.draws.find(draw => draw.mesh === scene.gear).model;
+    const bottom = Math.min(...points(scene.gear).map(point => transform(gearModel, point)[1]));
+    assert.ok(Math.abs(bottom - (aircraft.y - scene.world.gearClearance)) < .0001,
+      `${scene.aircraftId} tyres reach the modeled gear clearance`);
+    const plume = points(scene.flame), body = points(scene.jet);
+    const z = Math.max(...plume.map(p => p[2]));
+    for (const side of [-1, 1]) {
+      const base = plume.filter(p => p[2] === z && p[0] * side > 0);
+      const x = (Math.min(...base.map(p => p[0])) + Math.max(...base.map(p => p[0]))) / 2;
+      assert.ok(body.some(p => Math.abs(p[0] - x) < .02 && Math.abs(p[2] - z - .08) < .02),
+        `${scene.aircraftId} burner starts at an actual nozzle`);
+    }
+    if (scene.aircraftId === 'sr71') {
+      assert.ok(frame.camera.eye[2] < hornetChase[2] - 10, 'the longer jet receives more chase clearance');
+      assert.ok(Math.max(...plume.map(p => p[0])) > 4, 'both separate nacelles have a matching plume');
+    }
+    assert.deepEqual(scene.update(state, 0, 'cockpit').camera.eye, hornetCockpit);
+  }
+});
+
 test('cockpit snap views rotate in the banked aircraft frame and center on its nose without moving the pilot', () => {
   const scene = new FlightScene({ mesh: mesh => mesh }, world);
   const matrix = pose([50, 200, 300], 1.2, 0.3, -0.5);
@@ -157,6 +208,57 @@ test('World Flight inherits snaps through the three-argument scene update and re
   assert.ok(Math.abs(camera.eye[0] - 1) < 1e-5 && Math.abs(camera.eye[2] - 3.89) < 1e-5);
   assert.ok(dot(normalize(sub(camera.target, camera.eye)), [0, 0, -1]) > .99999);
   assert.ok(camera.logarithmicDepth && camera.far > 100_000);
+});
+
+test('World Flight and ground views project authored anchors in the same frame as the drawn models', () => {
+  const [x, z] = [1_048_651, -1_048_547], origin = [1_048_576, 0, -1_048_576];
+  const tile = { mesh: {}, offset: [origin[0], 0, origin[2]], shadow: false };
+  const region = { id: 'conus', cities: [], landmarks: [
+    { name: 'Space Needle', kind: 'needle', x: x + .125, z: z + 64.5 },
+    { name: 'SPACE NEEDLE', kind: 'needle', x: x + 26, z: z + 120 },
+    { name: 'Amazon Spheres', kind: 'spheres', x: x - 15, z: z + 200, heading: 1.02 },
+    { name: 'Bad coordinate', kind: 'coit', x: NaN, z },
+    { name: 'Too far', kind: 'coit', x, z: z + 30000 },
+  ], destinations: Array.from({ length: 14 }, (_, i) =>
+    ({ id: `place-${i}`, name: `Departure ${i}`, targetX: x + 1800 + i * 300, targetZ: z })) };
+  const terrain = { attach() {}, dispose() {}, draw: () => [tile], region, sample: () => 37,
+    visualSample: (_x, _z, level) => level === 7 ? 51 : 98 };
+  const graphics = { mesh: mesh => mesh };
+  const localWorld = { ...world, runwayStart: { x, z }, geography: { destination: { name: 'Departure', targetX: x, targetZ: z } },
+    landingSurfaces: [{ ...world.landingSurfaces[0], centerX: x - 80, centerZ: z + 8 }] };
+  const scene = new WorldFlightScene(graphics, localWorld, terrain, 'f14');
+  const state = { phase: 'racing', flight: { aircraft: { ...aircraft, x, z, up: { x: 0, y: 1, z: 0 } } } };
+  for (const mode of ['chase', 'cockpit']) {
+    const frame = scene.update(state, 0, mode);
+    assert.equal(scene.aircraftId, 'f14');
+    assert.equal(frame.landmarkAnchors.length, 12, 'anchor work stays bounded even with more nearby targets');
+    assert.ok(frame.landmarkAnchors.every(anchor => anchor.position.every(Number.isFinite)));
+    assert.equal(frame.landmarkAnchors.filter(anchor => anchor.name.toLowerCase() === 'space needle').length, 1);
+    assert.ok(!frame.landmarkAnchors.some(anchor => ['Bad coordinate', 'Too far'].includes(anchor.name)));
+    for (const [name, base] of [['Space Needle', 36], ['Amazon Spheres', 50]]) {
+      const { mesh } = scene.scenery.landmarks.find(item => item.location.name === name);
+      const draw = frame.draws.find(item => item.mesh === mesh);
+      const anchor = frame.landmarkAnchors.find(item => item.name === name);
+      assert.equal(draw.model[13], base);
+      assert.deepEqual(anchor.position, transform(draw.model, [0, Math.max(...points(mesh).map(p => p[1])), 0]));
+      assert.ok(dot(sub(anchor.position, frame.camera.eye), sub(frame.camera.target, frame.camera.eye)) > 0);
+    }
+    const runway = frame.landmarkAnchors.find(item => item.name === 'Runway');
+    assert.deepEqual(runway.position, [-5, 8.045, 37]);
+    assert.deepEqual(scene.nearbyLandmarks, ['Space Needle', 'SPACE NEEDLE', 'Amazon Spheres']);
+  }
+
+  const scenery = new WorldScenery(graphics, terrain);
+  const persistent = { mesh: {}, model: pose([x + 5, 42, z - 7]) };
+  const makeFrame = () => ({ draws: [persistent], camera: { eye: [x, 43, z], target: [x, 43, z + 5] } });
+  const input = makeFrame(), drive = scenery.decorate(input, x, z, { far: 25000, view: 'ground' });
+  assert.equal(drive, input);
+  assert.deepEqual(drive.camera.eye, [75, 43, 29]);
+  assert.equal(drive.camera.far, 25000);
+  assert.equal(drive.camera.logarithmicDepth, true);
+  assert.deepEqual([...drive.draws.find(item => item.mesh === persistent.mesh).model.slice(12, 15)], [80, 42, 22]);
+  assert.deepEqual([...persistent.model.slice(12, 15)], [x + 5, 42, z - 7], 'decoration must not rebase persistent draw objects');
+  assert.deepEqual(scenery.decorate(makeFrame(), x, z).landmarkAnchors, drive.landmarkAnchors);
 });
 
 test('the jet cockpit keeps the central windscreen free of opaque bracing', () => {

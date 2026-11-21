@@ -17,7 +17,8 @@ public sealed class GameSimulation : IGameSession
     private readonly FixedStepClock _clock = new();
     private readonly Racer _player = new();
     private readonly ModernLapGhost _ghost = new();
-    private readonly City.CitySurface? _citySurface;
+    private readonly IOpenDrivingSurface? _openSurface;
+    private readonly double _steeringScale = 1;
     private Racer? _rival;
     private ModernCheckpointTrial? _trial;
     private DriverInput _input;
@@ -38,9 +39,10 @@ public sealed class GameSimulation : IGameSession
         PlaceCar(_player, 0, 1, 0);
     }
 
-    internal GameSimulation(TrackDefinition track, City.CitySurface citySurface) : this(track)
+    internal GameSimulation(TrackDefinition track, IOpenDrivingSurface openSurface, double steeringScale = 1) : this(track)
     {
-        _citySurface = citySurface;
+        _openSurface = openSurface;
+        _steeringScale = steeringScale;
     }
 
     public TrackDefinition Track { get; }
@@ -186,13 +188,13 @@ public sealed class GameSimulation : IGameSession
         ref var _groundSeconds = ref racer.GroundSeconds;
         ref var _unstableSeconds = ref racer.UnstableSeconds;
         ref var _safeS = ref racer.SafeS;
-        // City actors share the integrator but keep their established handling.
-        var circuitHandling = _citySurface is null;
+        // Street sessions share the integrator without the circuit-specific steering assist.
+        var circuitHandling = _openSurface is null;
         var wasGrounded = _car.Grounded;
         var speed = Math.Sqrt(_car.Vx * _car.Vx + _car.Vz * _car.Vz);
         _car.Steer += Math.Clamp(_input.Steer - _car.Steer, -3.2 * dt, 3.2 * dt);
         var oldForwardSpeed = _car.Vx * Math.Sin(_car.Yaw) + _car.Vz * Math.Cos(_car.Yaw);
-        var maximumYawRate = MaximumYawRate(_car, speed, oldForwardSpeed, circuitHandling);
+        var maximumYawRate = MaximumYawRate(_car, speed, oldForwardSpeed, circuitHandling) * _steeringScale;
         var desiredYawRate = _car.Steer * Math.Clamp(oldForwardSpeed / 12, -1, 1) * maximumYawRate;
         if (!wasGrounded)
             desiredYawRate *= 0.22;
@@ -201,7 +203,7 @@ public sealed class GameSimulation : IGameSession
 
         var sin = Math.Sin(_car.Yaw);
         var cos = Math.Cos(_car.Yaw);
-        var near = _citySurface is null ? Track.FindNearest(_car.X, _car.Z) : 0;
+        var near = _openSurface is null ? Track.FindNearest(_car.X, _car.Z) : 0;
         double ax = 0, az = 0, ay = -9.81, pitchAcceleration = 0, rollAcceleration = 0;
         double landingSpeed = 0;
         var contacts = 0;
@@ -211,8 +213,8 @@ public sealed class GameSimulation : IGameSession
             var forward = WheelForward[i];
             var wheelX = _car.X + cos * right + sin * forward;
             var wheelZ = _car.Z - sin * right + cos * forward;
-            var road = _citySurface is null ? Track.SampleNear(wheelX, wheelZ, near)
-                : _citySurface.Sample(wheelX, wheelZ, _car.Y);
+            var road = _openSurface is null ? Track.SampleNear(wheelX, wheelZ, near)
+                : _openSurface.Sample(wheelX, wheelZ, _car.Y);
             var height = _car.Y + Math.Sin(_car.Pitch) * forward + Math.Sin(_car.Roll) * right - road.Y;
             var compression = road.Road && height > -0.3 ? Math.Clamp(DroopHeight - height, 0, 0.6) : 0;
             _car.SetSuspension(i, compression / 0.6);
@@ -275,7 +277,7 @@ public sealed class GameSimulation : IGameSession
         if (!wasGrounded && contacts > 0 && landingSpeed > 3.5)
             ApplyImpact(racer, (landingSpeed - 3.5) / 16);
 
-        if (_citySurface is null && _car.Y < 0.75)
+        if (_openSurface is null && _car.Y < 0.75)
         {
             if (_car.Vy < -1)
                 ApplyImpact(racer, Math.Max(0.25, -_car.Vy / 22));
@@ -289,8 +291,8 @@ public sealed class GameSimulation : IGameSession
             _groundSeconds += dt;
         }
 
-        // A city has real ground and independent streets, not a closed-ribbon recovery tether.
-        if (_citySurface is not null)
+        // Open ground has independent streets, not a closed-ribbon recovery tether.
+        if (_openSurface is not null)
             return;
 
         var center = Track.SampleNear(_car.X, _car.Z, Track.FindNearest(_car.X, _car.Z));

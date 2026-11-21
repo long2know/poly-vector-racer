@@ -1,5 +1,7 @@
 import { Geometry } from './engine/graphics.js';
 import { add, angleMix, cross, lerp3, mix, multiply, normalize, pose, random, scale, sub, transform } from './engine/math.js';
+import { buildCourseScenery } from './course-scenery.js';
+import { buildEv6 } from './ev6-geometry.js';
 
 const colors = {
   steel: [0.20, 0.25, 0.25], dark: [0.055, 0.068, 0.075], orange: [0.98, 0.24, 0.035],
@@ -193,7 +195,10 @@ function makeCar(color = colors.orange) {
   return mesh;
 }
 
+export const DEFAULT_VEHICLE_STYLE = 'ev6';
+
 export const vehicleStyles = [
+  { id: 'ev6', name: 'EV6-inspired / electric crossover' },
   { id: 'buggy', name: 'Stunt Buggy / open cage' },
   { id: 'coupe', name: 'Vector GT / wedge coupe' },
   { id: 'sedan', name: 'Touring Sedan / four door' },
@@ -202,8 +207,10 @@ export const vehicleStyles = [
   { id: 'pickup', name: 'Compact Pickup / open bed' },
 ];
 
-export function makeVehicleGeometry(style, color = colors.orange, interior = false) {
+export function makeVehicleGeometry(style, color, interior = false) {
   if (!vehicleStyles.some(choice => choice.id === style)) throw new Error(`Unknown vehicle body: ${style}`);
+  if (style === 'ev6') return buildEv6(new Builder(), color, interior);
+  color ??= colors.orange;
   if (style === 'buggy') return makeCar(color);
   const mesh = new Builder(), glass = [0.11, 0.26, 0.3], dark = colors.dark;
   if (interior) {
@@ -269,11 +276,11 @@ export function makeVehicleGeometry(style, color = colors.orange, interior = fal
   return mesh;
 }
 
-function makeWheel() {
+function makeWheel(hub = colors.orange) {
   const mesh = new Builder();
   mesh.cylinder([0, 0, 0], 0.52, 0.43, [0.036, 0.042, 0.045], 0, 24);
   mesh.cylinder([0, 0, 0], 0.31, 0.445, [0.14, 0.18, 0.2], 2, 16);
-  mesh.cylinder([0, 0, 0], 0.09, 0.48, colors.orange, 2, 12);
+  mesh.cylinder([0, 0, 0], 0.09, 0.48, hub, 2, 12);
   for (const side of [-1, 1]) {
     for (let i = 0; i < 5; i++) {
       const t = i * Math.PI * 2 / 5;
@@ -331,9 +338,11 @@ export class RaceScene {
     this.land = graphics.mesh(landscape.land);
     this.props = graphics.mesh(landscape.props);
     this.road = graphics.mesh(geometry ? geometry.road : makeTrack(this.track));
+    const scenery = geometry ? null : buildCourseScenery(new Builder(), this.track);
+    this.courseScenery = scenery ? graphics.mesh(scenery) : null;
     this.playerBodies = Object.fromEntries(vehicleStyles.map(style => [style.id, graphics.mesh(makeVehicleGeometry(style.id))]));
     this.ghostBodies = Object.fromEntries(vehicleStyles.map(style => [style.id, graphics.mesh(makeVehicleGeometry(style.id, [.62, .24, .95]))]));
-    this.cockpitBodies = Object.fromEntries(vehicleStyles.map(style => [style.id, graphics.mesh(makeVehicleGeometry(style.id, colors.orange, true))]));
+    this.cockpitBodies = Object.fromEntries(vehicleStyles.map(style => [style.id, graphics.mesh(makeVehicleGeometry(style.id, undefined, true))]));
     this.trafficBodies = [
       graphics.mesh(makeVehicleGeometry('sedan', [.78, .62, .17])),
       graphics.mesh(makeVehicleGeometry('coupe', [.08, .4, .64])),
@@ -342,9 +351,10 @@ export class RaceScene {
       graphics.mesh(makeVehicleGeometry('hatch', [.22, .45, .27])),
     ];
     this.pace = graphics.mesh(makeVehicleGeometry('coupe', [.03, .6, .72]));
-    this.setVehicleStyle('buggy');
     this.checkpointGate = graphics.mesh(makeCheckpointGate());
     this.wheel = graphics.mesh(makeWheel());
+    this.evWheel = graphics.mesh(makeWheel([.21, .5, .47]));
+    this.setVehicleStyle(DEFAULT_VEHICLE_STYLE);
     this.steering = graphics.mesh(makeSteeringWheel());
     const flame = new Builder();
     for (const side of [-1, 1]) {
@@ -360,6 +370,7 @@ export class RaceScene {
     this.car = this.playerBodies[style];
     this.ghost = this.ghostBodies[style];
     this.cockpitBody = this.cockpitBodies[style];
+    this.playerWheel = style === 'ev6' ? this.evWheel : this.wheel;
   }
 
   update(state, dt, mode = 'chase', compatibility = null) {
@@ -372,10 +383,11 @@ export class RaceScene {
     const draws = [{ mesh: this.land, shadow: false }, { mesh: this.props }, { mesh: this.road },
       { mesh: !ready && mode === 'cockpit' ? this.cockpitBody : this.car, model: body },
       { mesh: this.steering, model: multiply(body, pose([0, 0.49, 0.38], 0, 0.18, -car.steer * 1.1)) }];
+    if (this.courseScenery) draws.push({ mesh: this.courseScenery, shadow: false });
     for (let i = 0; i < 4; i++) {
       const side = i % 2 ? 1 : -1, z = i < 2 ? 1.3 : -1.22;
       const compression = car.suspension?.[i] ?? 0.5;
-      draws.push({ mesh: this.wheel, model: multiply(body,
+      draws.push({ mesh: this.playerWheel, model: multiply(body,
         pose([side * 1.06, -0.48 + (compression - 0.5) * 0.24, z],
           i < 2 ? car.steer * 0.35 : 0, -this.spin, 0)) });
     }
@@ -399,7 +411,7 @@ export class RaceScene {
       const ghost = state.ghost.car;
       const matrix = pose([ghost.x, ghost.y, ghost.z], ghost.yaw, ghost.pitch, ghost.roll);
       draws.push({ mesh: this.ghost, model: matrix, opacity: 0.4, shadow: false });
-      for (let i = 0; i < 4; i++) draws.push({ mesh: this.wheel, opacity: 0.4, shadow: false,
+      for (let i = 0; i < 4; i++) draws.push({ mesh: this.playerWheel, opacity: 0.4, shadow: false,
         model: multiply(matrix, pose([i % 2 ? 1.06 : -1.06,
           -0.48 + ((ghost.suspension?.[i] ?? 0.5) - 0.5) * 0.24, i < 2 ? 1.3 : -1.22],
         i < 2 ? ghost.steer * 0.35 : 0, -ghost.speed * state.lapTime / 0.52)) });

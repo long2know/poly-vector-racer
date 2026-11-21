@@ -15,6 +15,8 @@ using StuntRacer.FlightChecks;
     ("actual gentle landing and ground braking", DynamicsChecks.GentleLandingAndBraking),
     ("actual hard and gear-up runway crashes", DynamicsChecks.HardAndGearUpLanding),
     ("full roll/loop and long finite pose", DynamicsChecks.FullRollLoopAndLongPose),
+    ("training flight scans the moving drone and the ground beacon", TrainingChecks.ScanBothProps),
+    ("training flight pause, restart and garage lifecycle", TrainingChecks.PauseAndReplay),
     ("geographic terrain triangle and fallback alignment", GeographicChecks.MeshAlignment),
     ("geographic aircraft contacts and missing data wait", GeographicChecks.Contacts),
     ("geographic afterburner produces supersonic flight", GeographicChecks.SupersonicPerformance)

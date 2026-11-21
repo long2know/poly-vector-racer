@@ -3,14 +3,18 @@ import { Input } from './engine/input.js';
 import { RacingAudio } from './engine/audio.js';
 import { GameplayCapture, toggleFullscreen } from './engine/display.js';
 import { clamp } from './engine/math.js';
-import { RaceScene, vehicleStyles } from './scene.js';
+import { DEFAULT_VEHICLE_STYLE, RaceScene, vehicleStyles } from './scene.js';
 import { FlightScene, flightReadouts } from './flight-scene.js';
 import { WorldFlightScene } from './world-flight-scene.js';
+import { WorldDriveScene, loadSeattleDrive, seattleRegion } from './world-drive-scene.js';
+import { FlightLandmarkLabels } from './flight-landmark-labels.js';
+import { TrainingFlightScene } from './training-flight-scene.js';
 import { readWorldCatalog, WorldTerrain } from './world-terrain.js';
 import { CityScene } from './city-scene.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game'), audio = new RacingAudio(), capture = new GameplayCapture();
+const landmarkLabels = new FlightLandmarkLabels($('flight-landmark-labels'), canvas);
 const drivingCanvasLabel = canvas.getAttribute('aria-label');
 const emptyInput = { steer: 0, throttle: 0, brake: 0, boost: false };
 let graphics, scene, input, api, runtime, state, frame, previousTime, failed = false, disposed = false;
@@ -27,6 +31,9 @@ let sourceConfiguration = { sourcePackageAvailable: false, sourcePackageUrl: nul
 let sourcePackageText = null;
 let originalFlightPackageText = null;
 let worldCatalog, selectedDeparture = 'boeing';
+let worldAircraftProfiles = [], selectedAircraft = 'f18', worldAircraft = null, mapRoads = false;
+let seattleDriveUnavailable = 'No World Flight terrain package is configured.';
+let displayedDrivePlan, displayedDriveRevision;
 let touchSeen = false;
 let trackChoices = [];
 let selectedTrack = 'included:foundry';
@@ -34,7 +41,7 @@ let lastRacingTrack = 'included:foundry';
 let sourcePackageId = null;
 let ghostEnabled = true, lastCheckpoint = 0, checkpointNoticeUntil = 0, checkpointBonus = 0;
 let trackBusy = false;
-let vehicleStyle = 'buggy';
+let vehicleStyle = DEFAULT_VEHICLE_STYLE;
 const drivingExperiences = {
   'free-roam': { name: 'CITY CRUISE', course: 'Meridian City / free driving', group: 'Open-world city',
     title: 'OWN<br>THE<br><em>STREETS.</em>', description: 'Explore a connected polygon city. Choose your own turns. Traffic, sidewalks, a skyline and a waterfront bridge.' },
@@ -42,6 +49,8 @@ const drivingExperiences = {
     title: 'CITY.<br>CLOCK.<br><em>GO.</em>', description: 'Race through ordered street checkpoints. Find your line through the city and its moving traffic.' },
   'city-circuit': { name: 'CITY CIRCUIT', course: 'Meridian City / street circuit', group: 'Open-world city',
     title: 'TAKE<br>THE<br><em>BLOCK.</em>', description: 'A street circuit through the city. Intersections, real traffic and a rival to beat.' },
+  'seattle-drive': { name: 'SEATTLE SCENIC DRIVE', course: 'Seattle Scenic Drive', group: 'Geographic driving',
+    title: 'SCENIC<br><em>SEATTLE.</em>', description: 'Drive downtown Seattle or choose a scenic stop in the GPS. Offline game navigation on selected surface streets only.' },
   'hard-driving': { name: "HARD DRIVIN'", course: "Hard Drivin' / proving ground", group: 'Driving experiences',
     title: 'FAST.<br>HIGH.<br><em>HARD.</em>', description: 'A separate timed proving ground. A 44-metre loop, banked corners, precision bridge and real 22-metre ramp gap.' },
   stunts: { name: 'STUNTS', course: 'Stunts / loop & jump park', group: 'Driving experiences',
@@ -97,6 +106,8 @@ function fail(error) {
   input?.clear();
   endFlightDrag();
   $('flight-view-controls').hidden = true;
+  $('world-aircraft-menu').disabled = true;
+  landmarkLabels.clear();
   document.body.dataset.phase = 'error';
   $('error-panel').hidden = false;
   $('start-button').disabled = true;
@@ -124,6 +135,7 @@ function phaseChanged() {
   $('finish-panel').hidden = state.phase !== 'finished';
   if (flightPlaying()) updateFlightView();
   else resetFlightView();
+  updateWorldAircraftControl();
   if (state.phase === 'finished') {
     if (state.city) {
       const city = state.city, circuit = city.mode === 'city-circuit';
@@ -143,6 +155,16 @@ function phaseChanged() {
       text('finish-best-label', 'STUNT SCORE');
       text('finish-time', time(state.time));
       text('finish-best', `${state.stunt.score} PTS`);
+      return;
+    }
+    if (state.flight?.training) {
+      const { score, remaining } = state.flight.training;
+      text('finish-eyebrow', 'COPPERCLOUD RANGE / FLIGHT TRAINING');
+      text('finish-title', remaining === 0 ? 'RANGE CLEAR.' : 'RANGE RUN ENDED.');
+      text('finish-time-label', 'FLIGHT TIME');
+      text('finish-best-label', 'PROPS TAGGED');
+      text('finish-time', time(state.time));
+      text('finish-best', `${score} / ${score + remaining}`);
       return;
     }
     if (state.flight) {
@@ -169,8 +191,10 @@ function phaseChanged() {
 
 function updateHud(dt) {
   phaseChanged();
-  $('driving-guidance').hidden = !state.city && !state.stunt;
+  $('driving-guidance').hidden = !state.city && !state.stunt && !state.drive;
+  $('seattle-gps').hidden = !state.drive;
   $('map-target').hidden = true;
+  $('training-dashboard').hidden = !state.flight?.training;
   if (state.flight) { updateFlightHud(); return; }
   text('speed-unit', 'KM/H');
   text('best-heading', 'BEST LAP');
@@ -232,6 +256,7 @@ function updateHud(dt) {
   $('map-player').setAttribute('cy', y.toFixed(2));
   if (state.city) updateCityHud();
   else if (state.stunt) updateStuntHud();
+  else if (state.drive) updateSeattleHud();
 }
 
 function updateDrivingTarget(target) {
@@ -243,6 +268,43 @@ function updateDrivingTarget(target) {
   $('map-target').setAttribute('cy', z.toFixed(2));
   const bearing = Math.atan2(target.x - state.player.x, target.z - state.player.z) - state.player.yaw;
   $('route-arrow').style.transform = `rotate(${bearing}rad)`;
+}
+
+function updateSeattleHud() {
+  const drive = state.drive;
+  const running = state.phase === 'racing';
+  const ground = scene.hasDetailedGround(state.player);
+  const destination = scene.world.destinations.find(stop => stop.id === drive.destinationId);
+  const choice = $('seattle-destination'), auto = $('seattle-autopilot');
+  if (choice.value !== (drive.destinationId ?? '')) choice.value = drive.destinationId ?? '';
+  choice.disabled = !running || trackBusy;
+  auto.disabled = !running || trackBusy || !ground || !destination || drive.status === 'arrived';
+  auto.setAttribute('aria-pressed', String(drive.autopilot));
+  text('seattle-autopilot', drive.autopilot ? 'AUTOPILOT ON' : 'AUTOPILOT');
+  const terrainMessage = scene.terrain.status;
+  text('seattle-gps-status', !ground ? terrainMessage || 'Loading detailed Seattle terrain…'
+    : running ? drive.message : 'Driving and GPS paused.');
+  if (state.phase === 'ready') {
+    $('start-button').disabled = !ready || trackBusy || !ground;
+    text('load-status', ground ? 'GPS READY / CLICK TO DRIVE' : terrainMessage || 'Loading detailed Seattle terrain…');
+  }
+  if (drive.planRevision !== displayedDriveRevision) {
+    displayedDrivePlan = JSON.parse(api.SeattleDrivePlan());
+    displayedDriveRevision = drive.planRevision;
+    $('map-drive-route').setAttribute('d', displayedDrivePlan ? scene.mapPlanPath(displayedDrivePlan.points) : '');
+  }
+  text('lap-heading', 'DISTANCE');
+  text('lap', (drive.drivenDistance / 1000).toFixed(2));
+  text('lap-total', ' KM');
+  text('time-heading', 'DRIVE TIME');
+  text('best-heading', 'GPS');
+  text('best-time', drive.status === 'arrived' ? 'ARRIVED' : drive.autopilot ? 'AUTO' : 'MANUAL');
+  text('world-district', destination?.name ?? 'DOWNTOWN SEATTLE');
+  text('world-objective', drive.remaining == null ? 'SELECT A GPS STOP OR DRIVE MANUALLY'
+    : drive.status === 'arrived' ? `ARRIVED / ${destination.approach.toUpperCase()}`
+      : `${Math.round(drive.remaining).toLocaleString('en-US')} M VIA MAPPED STREETS`);
+  updateDrivingTarget(drive.waypoint);
+  text('race-event', '');
 }
 
 function updateCityHud() {
@@ -294,6 +356,8 @@ function updateStuntHud() {
 
 function updateFlightHud() {
   const aircraft = state.flight.aircraft;
+  const training = state.flight.training;
+  if (training) updateTrainingHud(training);
   const readout = flightReadouts(aircraft, scene.navigationWorld);
   const display = state.flight.display;
   const speed = display?.speedKnots ?? Math.round(aircraft.speed * 1.943844);
@@ -329,7 +393,8 @@ function updateFlightHud() {
   text('touch-gear', aircraft.gearDown ? 'GEAR DN' : 'GEAR UP');
   text('flight-heading', String((display?.headingDegrees ?? Math.round(readout.heading)) % 360).padStart(3, '0'));
   $('flight-ladder').setAttribute('transform', `rotate(${readout.bank.toFixed(2)}) translate(0,${(readout.pitch * 3).toFixed(2)})`);
-  text('flight-nav', readout.runway ? `${readout.runway.toUpperCase()} / ${(readout.range / 1852).toFixed(1)} NM` : 'NO AIRFIELD IN RANGE');
+  text('flight-nav', training ? 'COPPERCLOUD RANGE'
+    : readout.runway ? `${readout.runway.toUpperCase()} / ${(readout.range / 1852).toFixed(1)} NM` : 'NO AIRFIELD IN RANGE');
   const configuration = state.flight.configuration;
   text('flight-config', `${aircraft.gearDown ? 'GEAR DOWN' : 'GEAR UP'}${configuration ? configuration.hookDown ? ' / HOOK DOWN' : ' / HOOK UP' : ''}${aircraft.onGround ? ' / GROUND' : ''}`);
   text('touch-hook', configuration?.hookDown ? 'HOOK DN' : 'HOOK UP');
@@ -349,6 +414,24 @@ function updateFlightHud() {
   const [x, y] = scene.mapPoint(aircraft.x, aircraft.z);
   $('map-player').setAttribute('cx', x.toFixed(2));
   $('map-player').setAttribute('cy', y.toFixed(2));
+}
+
+function updateTrainingHud(training) {
+  const { score, remaining, status, cooldownSeconds, inRangeId, props } = training;
+  const next = props.find(prop => prop.id === inRangeId) ??
+    props.reduce((closest, prop) => !prop.tagged && (!closest || prop.distance < closest.distance) ? prop : closest, null);
+  text('training-score', `${score} TAGGED / ${remaining} LEFT`);
+  text('training-status', status);
+  const charging = cooldownSeconds > 0;
+  text('training-range', !next ? 'All practice props tagged' : charging ? 'Scanner recharging'
+    : inRangeId ? `${next.name} · in range` : `${next.name} · ${Math.round(next.distance)} m`);
+  $('training-scan-button').dataset.scanner = !charging && inRangeId ? 'ready' : 'standby';
+  if (next) {
+    const [x, y] = scene.mapPoint(next.position.x, next.position.z);
+    $('map-target').hidden = false;
+    $('map-target').setAttribute('cx', x.toFixed(2));
+    $('map-target').setAttribute('cy', y.toFixed(2));
+  }
 }
 
 function updateFlightHudMode() {
@@ -374,9 +457,13 @@ function endFlightDrag(event) {
 
 function updateFlightView() {
   const view = state?.flight ? scene.flightView : 'forward';
+  const playing = flightPlaying();
   document.body.dataset.flightView = view;
-  $('flight-view-controls').hidden = !flightPlaying();
-  text('flight-view-reset', view === 'forward' ? 'CENTER VIEW' : `${view.replace('-', ' ').toUpperCase()} / CENTER`);
+  $('flight-view-controls').hidden = !playing;
+  $('training-scan-button').hidden = !playing || !state.flight.training;
+  if (!playing) landmarkLabels.clear();
+  text('flight-view-reset', view === 'forward' || scene?.terrain ? 'CENTER VIEW'
+    : `${view.replace('-', ' ').toUpperCase()} / CENTER`);
   canvas.title = !state?.flight ? '' : camera === 'chase'
     ? 'Drag to orbit the aircraft. Press 5 to center the view.'
     : 'Use the number keys to look around. Press 5 to look forward.';
@@ -402,6 +489,10 @@ async function unlockAudio() {
 
 async function startRun(restart = false) {
   if (!ready || failed || starting || trackBusy) return;
+  if (state.drive && !scene.hasDetailedGround(restart ? scene.world.spawn : state.player)) {
+    toast(scene.terrain.status || 'Seattle Drive is waiting for detailed terrain.');
+    return;
+  }
   starting = true;
   try {
     await unlockAudio();
@@ -452,7 +543,18 @@ async function action(name, value) {
     return;
   }
   if (!api || !ready || trackBusy) return;
-  if (name === 'garage') {
+  if (state.drive && ['seattle-destination', 'seattle-autopilot'].includes(name)) {
+    if (state.phase !== 'racing') return;
+    try {
+      api.Command(name === 'seattle-destination' ? value ? `destination:${value}` : 'gps-clear'
+        : state.drive.autopilot ? 'autopilot-off' : 'autopilot-on');
+      state = JSON.parse(api.Observe());
+      updateSeattleHud();
+    } catch (error) {
+      toast(error.message);
+    }
+    canvas.focus({ preventScroll: true });
+  } else if (name === 'garage') {
     capture.stop();
     input.clear();
     audio.silence();
@@ -482,6 +584,22 @@ async function action(name, value) {
     chaseHud = !chaseHud;
     updateFlightHudMode();
     canvas.focus({ preventScroll: true });
+  } else if (name === 'world-labels' && scene.terrain && flightPlaying()) {
+    landmarkLabels.enabled = !landmarkLabels.enabled;
+    if (!landmarkLabels.enabled) landmarkLabels.clear();
+    updateSceneryControls();
+    canvas.focus({ preventScroll: true });
+  } else if (name === 'world-roads' && scene.terrain?.region.roads && flightPlaying()) {
+    mapRoads = !mapRoads;
+    scene.setMapRoads(mapRoads);
+    updateSceneryControls();
+    canvas.focus({ preventScroll: true });
+  } else if (name === 'scan' && state.flight?.training && state.phase === 'racing') {
+    api.Command('scan');
+    state = JSON.parse(api.Observe());
+    phaseChanged();
+    updateTrainingHud(state.flight.training);
+    canvas.focus({ preventScroll: true });
   } else if (name === 'start') {
     if (state.phase === 'ready') await startRun();
     else if (state.phase === 'paused') await resume();
@@ -497,7 +615,8 @@ async function action(name, value) {
       phaseChanged();
       input.clear();
       input.setFlightThrottle(state.flight.aircraft.throttle);
-      toast(scene.terrain ? 'Returned to the selected departure.' : 'Aircraft recovered to the runway.', 2500);
+      toast(scene.terrain ? 'Returned to the selected departure.' : state.flight.training
+        ? 'Returned to the range briefing.' : 'Aircraft recovered to the runway.', 2500);
     } else toast('Car recovered. A time penalty was added to your run.', 2500);
   } else if (name === 'gear' && state.flight) {
     if (state.phase === 'paused') toast('Resume the flight to change landing gear.', 2500);
@@ -547,28 +666,39 @@ function updateStats() {
 
 function configureTrack(track) {
   const flying = track.kind === 'flight';
+  const drive = track.kind === 'seattle-drive';
   const city = track.kind === 'city', road = city ? track.track : track;
-  if (!flying && (!Array.isArray(road.points) || road.points.length < 3)) throw new Error('The C# track definition is invalid.');
-  scene = track.terrain ? new WorldFlightScene(graphics, track.world, track.terrain)
-    : flying ? new FlightScene(graphics, track.world) : city ? new CityScene(graphics, road, track.world) : new RaceScene(graphics, road);
-  if (!flying) scene.setVehicleStyle(vehicleStyle);
+  if (!flying && !drive && (!Array.isArray(road.points) || road.points.length < 3)) throw new Error('The C# track definition is invalid.');
   state = JSON.parse(api.Observe());
   compatibility = JSON.parse(api.DescribeCompatibility());
+  const training = Boolean(state.flight?.training);
   const original = compatibility.flightSourceActive === true;
-  const world = Boolean(track.terrain);
+  const world = flying && Boolean(track.terrain);
+  worldAircraft = world ? track.aircraft : null;
+  scene = drive ? new WorldDriveScene(graphics, track.world, track.terrain)
+    : world ? new WorldFlightScene(graphics, track.world, track.terrain, worldAircraft.id)
+    : training ? new TrainingFlightScene(graphics, track.world)
+      : flying ? new FlightScene(graphics, track.world) : city ? new CityScene(graphics, road, track.world) : new RaceScene(graphics, road);
+  if (!flying) scene.setVehicleStyle(vehicleStyle);
+  if (world) scene.setMapRoads(Boolean(scene.terrain.region.roads && mapRoads));
+  landmarkLabels.clear(true);
   document.body.dataset.vehicle = flying ? 'flight' : 'racing';
   document.body.dataset.flightSource = original ? 'original' : 'authored';
   document.body.dataset.worldFlight = world ? 'on' : 'off';
   document.body.dataset.experience = compatibility.experience ?? 'racing';
   document.body.dataset.camera = camera;
   updateFlightHudMode();
-  input.setMode(flying ? 'flight' : 'racing', state.flight?.aircraft.throttle ?? 0);
+  updateSceneryControls();
+  input.setMode(flying ? 'flight' : 'racing', state.flight?.aircraft.throttle ?? 0, training);
   resetFlightView();
   canvas.setAttribute('aria-label', flying
-    ? '3D flight game. A and D bank, Q and E steer the rudder, plus and minus set throttle. Use 5 to center the view. Open Controls for all options.'
+    ? `3D flight game. A and D bank, Q and E steer the rudder, plus and minus set throttle. Use 5 to center the view.${training ? ' T scans nearby practice props.' : ''} Open Controls for all options.`
     : drivingCanvasLabel);
-  $('hud').setAttribute('aria-label', flying ? 'Flight dashboard' : 'Race dashboard');
-  $('pause-button').setAttribute('aria-label', flying ? 'Pause flight' : 'Pause race');
+  $('hud').setAttribute('aria-label', flying ? 'Flight dashboard' : drive ? 'Seattle driving dashboard' : 'Race dashboard');
+  $('map').setAttribute('aria-label', drive ? 'Seattle street map and GPS plan' : 'Track map');
+  $('pause-button').setAttribute('aria-label', flying ? 'Pause flight' : drive ? 'Pause drive' : 'Pause race');
+  text('pause-copy', training ? 'Your flight and the scanner are paused.' : flying ? 'Your flight is paused.' : 'Your run is paused. The track can wait.');
+  text('resume-label', flying ? 'BACK TO FLIGHT' : drive ? 'BACK TO SEATTLE' : 'BACK TO THE TRACK');
   $('touch-controls').setAttribute('aria-label', flying ? 'Touch flight controls' : 'Touch driving controls');
   text('steer-label', flying ? 'AILERON / PITCH' : 'DRAG TO STEER');
   $('touch-steering').setAttribute('aria-label', flying ? 'Drag left or right to bank; drag up to raise the nose' : 'Drag horizontally to steer');
@@ -583,18 +713,25 @@ function configureTrack(track) {
   }
   if (compatibility.authoredTrackId) selectedTrack = `included:${compatibility.authoredTrackId}`;
   if (!flying && !drivingExperiences[compatibility.experience]) lastRacingTrack = selectedTrack;
-  text('track-length', world ? '50 STATES' : flying ? 'FREE' : city ? 'OPEN' : Math.round(road.length).toLocaleString('en-US'));
+  text('track-length', drive ? 'DOWNTOWN' : world ? '50 STATES' : training ? 'FICTIONAL' : flying ? 'FREE' : city ? 'OPEN' : Math.round(road.length).toLocaleString('en-US'));
   const circuitName = (world ? track.world.geography.destination.name.split(' • ')[0]
     : flying ? track.name : city ? track.world.name : road.name).replace(/\s+\u2014.*$/, '').toUpperCase();
   text('circuit-name', circuitName);
   updateModeLabels();
-  const path = city ? scene.mapRoadPath() : flying && track.world.sourceWorld ? scene.mapSurfacePaths() : scene.track.points.map((p, index) => {
+  const path = drive ? scene.mapStreetPath() : city ? scene.mapRoadPath() : flying && track.world.sourceWorld ? scene.mapSurfacePaths() : scene.track.points.map((p, index) => {
     const [x, y] = scene.mapPoint(p.x, p.z);
     return `${index ? 'L' : 'M'}${x.toFixed(2)} ${y.toFixed(2)}`;
   }).join(' ') + (world ? '' : ' Z');
-  $('map-outline').setAttribute('d', path);
+  $('map-outline').setAttribute('d', drive ? '' : path);
   $('map-road').setAttribute('d', path);
-  const start = flying ? track.world.runwayStart : city ? state.player : road.points[0];
+  $('map-drive-route').setAttribute('d', '');
+  displayedDrivePlan = displayedDriveRevision = undefined;
+  if (drive) {
+    const select = $('seattle-destination');
+    select.replaceChildren(new Option('Choose a scenic stop', ''), ...track.world.destinations.map(stop =>
+      new Option(stop.name, stop.id)));
+  }
+  const start = flying ? track.world.runwayStart : city || drive ? state.player : road.points[0];
   const [x, y] = scene.mapPoint(start.x, start.z);
   $('map-start').setAttribute('cx', x);
   $('map-start').setAttribute('cy', y);
@@ -603,6 +740,8 @@ function configureTrack(track) {
   const classic = compatibility.sourcePhysicsActive === true;
   const sourceData = compatibility.trackData === 'amiga-derived-reference-data';
   text('track-mode', world ? 'WORLD FLIGHT / GEOGRAPHIC TERRAIN / NOT FOR NAVIGATION'
+    : drive ? 'SEATTLE SCENIC DRIVE / OFFLINE GAME NAVIGATION ONLY'
+    : training ? 'COPPERCLOUD RANGE / AUTHORED ARCADE FLIGHT TRAINING'
     : special ? `${special.name} / NEWLY AUTHORED VECTOR DRIVING EXPERIENCE`
     : original ? 'AMIGA INTERCEPTOR / ORIGINAL FLIGHT RULES + VERIFIED USER-DISK DATA / ENHANCED WEBGL'
     : flying ? 'INTERCEPTOR-INSPIRED FLIGHT / AUTHORED AERODYNAMICS'
@@ -611,6 +750,8 @@ function configureTrack(track) {
       : imported ? 'PRIVATE IMPORTED GEOMETRY / PROTOTYPE PHYSICS - NOT ORIGINAL AMIGA DYNAMICS'
         : 'INSPIRED BY THE AMIGA ORIGINAL / MODERN PLAYABLE PROTOTYPE');
   text('track-import-status', world ? 'World Flight uses Modern jet physics. The Amiga model and original scenery remain separate.'
+    : drive ? track.world.coverage
+    : training ? 'Flight Training uses a fictional island range and authored jet physics. It needs no external data.'
     : special ? `${special.name}: newly authored geometry and driving rules. Inspired by classic driving games; not an imported historical engine.`
     : original ? 'Original Amiga player rules and verified user-disk tables/world are active. Enhanced rendering uses the canonical source contact profile; clean publisher-disk equality is not claimed.'
     : flying ? 'Modern authored jet model selected. Load an original ADF/ZIP or choose Amiga flight to use verified original player rules and disk data.'
@@ -635,28 +776,42 @@ function updateModeLabels() {
   const mode = currentMode();
   const flying = mode.startsWith('flight');
   const world = mode === 'flight-world';
+  const drive = mode === 'seattle-drive';
+  const training = mode === 'flight-training';
   const special = drivingExperiences[mode], city = mode === 'free-roam' || mode.startsWith('city-');
-  const name = special?.name ?? (world ? 'WORLD FLIGHT' : mode === 'flight-original' ? 'AMIGA FLIGHT / INTERCEPTOR' : flying ? 'FLIGHT / INTERCEPTOR' : mode === 'checkpoint-run' ? 'CHECKPOINT RUN' : mode === 'race' ? 'RIVAL RACE' : 'TIME ATTACK');
+  const name = special?.name ?? (world ? 'WORLD FLIGHT' : training ? 'FLIGHT TRAINING' : mode === 'flight-original' ? 'AMIGA FLIGHT / INTERCEPTOR' : flying ? 'FLIGHT / INTERCEPTOR' : mode === 'checkpoint-run' ? 'CHECKPOINT RUN' : mode === 'race' ? 'RIVAL RACE' : 'TIME ATTACK');
   $('game-mode').value = mode;
   $('session-mode').value = mode;
-  text('map-label', `${scene.track.name.replace(/\s+\u2014.*$/, '').toUpperCase()} / ${name}`);
+  text('map-label', drive ? 'SEATTLE / OFFLINE GPS' : `${scene.track.name.replace(/\s+\u2014.*$/, '').toUpperCase()} / ${name}`);
   text('circuit-mode', `01 / ${name}`);
-  text('circuit-laps', flying || city || mode === 'stunts' ? '--' : ['checkpoint-run', 'hard-driving'].includes(mode) ? '1' : '3');
-  text('track-length-unit', world ? 'TERRAIN COVERAGE' : flying ? 'FLIGHT' : city ? 'CITY' : 'METRES');
-  text('menu-intro', world ? 'Fly the U.S. in polygons. Explore Seattle, the Golden Gate, Yosemite and Grand Canyon, or go supersonic over the Cascades.'
+  text('circuit-laps', flying || city || drive || mode === 'stunts' ? '--' : ['checkpoint-run', 'hard-driving'].includes(mode) ? '1' : '3');
+  text('track-length-unit', drive ? 'SURFACE STREETS' : world ? 'TERRAIN COVERAGE' : training ? 'SCAN RANGE' : flying ? 'FLIGHT' : city ? 'CITY' : 'METRES');
+  text('menu-intro', world ? worldAircraft.id === 'sr71'
+      ? 'For an SR-71 speed run, choose Cascades high-altitude cruise. Set full throttle, then hold Space or BURN for afterburner.'
+      : 'Fly the U.S. in polygons. Explore Seattle, the Golden Gate, Yosemite and Grand Canyon, or go supersonic over the Cascades.'
+    : training ? 'Launch into Coppercloud Range. Fly close to the moving drone and the ground beacon, and press T or tap SCAN to tag them.'
     : special ? special.description : flying ? 'A runway. An open sky. A very different kind of stunt. Climb out, bank over the bay, then bring it home.'
     : 'A ribbon of tarmac. A very long way down. Find your line. Save your boost. Stick the landing.');
-  $('menu-title').innerHTML = special?.title ?? (world ? 'WIDE<br><em>OPEN.</em>' : flying ? 'LEAVE<br>THE<br><em>ROAD.</em>' : 'DRIVE<br>ABOVE<br><em>IT ALL.</em>');
+  $('menu-title').innerHTML = special?.title ?? (world ? 'WIDE<br><em>OPEN.</em>' : training ? 'SCAN.<br><em>TAG.</em>'
+    : flying ? 'LEAVE<br>THE<br><em>ROAD.</em>' : 'DRIVE<br>ABOVE<br><em>IT ALL.</em>');
   text('mode-description', world ? 'Stream real U.S. terrain. For Mach flight, raise throttle to full, retract the gear and hold Space.'
+    : training ? 'Two practice props. One airborne start. Keep near the initial heading on your first pass, and scan when in range.'
     : special ? special.description : mode === 'flight-original' ? 'Original Amiga flight rules. Actual user-disk world. Runway, carrier and free-flight practice.'
     : flying ? 'Modern jet aerodynamics. Runway takeoff, free flight and landing practice. No original disk required.'
     : mode === 'checkpoint-run' ? 'One circuit. Ordered gates. Extra time at each checkpoint.'
     : mode === 'race' ? 'Same-physics rival. Three laps. First to the flag wins.'
       : 'Three laps. Set a clean best, then chase your own ghost.');
+  text('world-aircraft-brief', world
+    ? `${worldAircraft.name} · game speed limit Mach ${worldAircraft.maximumMach}. Change aircraft in the Garage before departure.` : '');
   $('ghost-mode').disabled = !ready || trackBusy || !['time-attack', 'stunts'].includes(mode) || compatibility.sourcePhysicsActive === true;
   for (const button of document.querySelectorAll('.experience-picker [data-experience]')) {
-    button.disabled = !ready || trackBusy;
-    const active = button.dataset.experience === 'flight' ? flying && !world
+    const unavailable = button.dataset.experience === 'seattle-drive' && seattleDriveUnavailable;
+    button.disabled = !ready || trackBusy || Boolean(unavailable);
+    if (button.dataset.experience === 'seattle-drive') {
+      button.title = unavailable || 'Drive a connected subset of downtown Seattle streets';
+      text('seattle-short-status', unavailable ? 'UNAVAILABLE' : 'SCENIC DRIVE');
+    }
+    const active = button.dataset.experience === 'flight' ? flying && !world && !training
       : button.dataset.experience === 'free-roam' ? city : mode === button.dataset.experience;
     button.setAttribute('aria-pressed', String(active));
   }
@@ -666,13 +821,18 @@ function updateModeLabels() {
       option.disabled = option.value === 'flight-original'
         ? !originalFlightAvailable()
         : option.value === 'flight-world' ? !sourceConfiguration.worldFlightUrl
-        : compatibility.sourcePhysicsActive === true && !['time-attack', 'flight'].includes(option.value) && !drivingExperiences[option.value];
+        : option.value === 'seattle-drive' ? Boolean(seattleDriveUnavailable)
+        : compatibility.sourcePhysicsActive === true && !['time-attack', 'flight', 'flight-training'].includes(option.value) && !drivingExperiences[option.value];
   }
+  $('seattle-availability').hidden = !seattleDriveUnavailable;
+  text('seattle-availability', seattleDriveUnavailable ? `Seattle Scenic Drive unavailable: ${seattleDriveUnavailable}` : '');
 }
 
 function startLabel() {
   const mode = currentMode();
   return mode === 'flight-world' ? state.flight.aircraft.onGround ? 'TAKE OFF / BOEING FIELD' : 'START SCENIC FLIGHT'
+    : mode === 'flight-training' ? 'LAUNCH / SCAN RANGE'
+    : mode === 'seattle-drive' ? 'START SCENIC DRIVE'
     : mode === 'free-roam' ? 'START CRUISING'
     : mode === 'city-blitz' ? 'START CITY BLITZ'
       : mode === 'city-circuit' ? 'START STREET RACE'
@@ -715,13 +875,27 @@ function renderTrackChoices() {
 }
 
 function currentMode() {
-  return compatibility.experience === 'flight-world' || drivingExperiences[compatibility.experience] ? compatibility.experience
+  return ['flight-world', 'flight-training'].includes(compatibility.experience) || drivingExperiences[compatibility.experience] ? compatibility.experience
     : state?.flight ? compatibility.flightSourceActive ? 'flight-original' : 'flight'
     : state?.trial ? 'checkpoint-run' : state?.race?.mode ?? 'time-attack';
 }
 
 function originalFlightAvailable() {
   return sourceConfiguration.flightPackageAvailable || compatibility.originalFlightDataAvailable;
+}
+
+function updateWorldAircraftControl() {
+  const select = $('world-aircraft-menu');
+  select.disabled = !ready || trackBusy || !worldAircraft || state?.phase !== 'ready';
+  select.value = selectedAircraft;
+}
+
+function updateSceneryControls() {
+  const roadsAvailable = Boolean(scene.terrain?.region.roads);
+  $('world-label-button').setAttribute('aria-pressed', String(landmarkLabels.enabled));
+  $('world-road-button').hidden = !roadsAvailable;
+  $('world-road-button').disabled = !roadsAvailable;
+  $('world-road-button').setAttribute('aria-pressed', String(roadsAvailable && mapRoads));
 }
 
 function updateSourceOptions() {
@@ -732,9 +906,10 @@ function updateSourceOptions() {
   $('classic-option').hidden = Boolean(state?.flight);
   $('flight-original-option').hidden = !state?.flight;
   $('flight-original-option').disabled = !originalFlightAvailable();
-  $('physics-mode').disabled = !ready || trackBusy || special || world;
+  $('physics-mode').disabled = !ready || trackBusy || special || world || currentMode() === 'flight-training';
   $('world-flight-button').disabled = !ready || trackBusy || !sourceConfiguration.worldFlightUrl;
   for (const id of ['world-departure', 'world-departure-menu']) $(id).disabled = !ready || trackBusy || !world;
+  updateWorldAircraftControl();
   $('source-track-button').disabled = !ready || trackBusy || Boolean(state?.flight) || !sourceConfiguration.sourcePackageAvailable;
   $('original-flight-button').disabled = !ready || trackBusy || !originalFlightAvailable();
   $('import-flight-button').disabled = !ready || trackBusy;
@@ -742,12 +917,19 @@ function updateSourceOptions() {
   if (choice) choice.available = Boolean(originalFlightAvailable());
   const worldChoice = trackChoices.find(item => item.id === 'flight:world');
   if (worldChoice) worldChoice.available = Boolean(sourceConfiguration.worldFlightUrl);
+  const driveChoice = trackChoices.find(item => item.id === 'experience:seattle-drive');
+  if (driveChoice) {
+    driveChoice.available = !seattleDriveUnavailable;
+    driveChoice.reason = seattleDriveUnavailable;
+  }
 }
 
 function setTrackBusy(busy) {
   trackBusy = busy;
   for (const id of ['start-button', 'track-select', 'session-track', 'import-track-button', 'physics-mode'])
     $(id).disabled = busy || !ready;
+  if (state?.drive && state.phase === 'ready')
+    $('start-button').disabled ||= !scene.hasDetailedGround(state.player);
   for (const id of ['game-mode', 'session-mode'])
     $(id).disabled = busy || !ready;
   $('reset-track-button').disabled = busy || !ready || compatibility.trackData === 'authored';
@@ -819,7 +1001,7 @@ function populateWorldDepartures(catalog) {
   }
 }
 
-async function loadWorldFlight(departure) {
+async function loadWorldFlight(departure, aircraftId = selectedAircraft) {
   if (!sourceConfiguration.worldFlightUrl) throw new Error('No World Flight terrain package is configured.');
   worldCatalog ??= await readWorldCatalog(sourceConfiguration.worldFlightUrl);
   const region = worldCatalog.regions.find(item => item.destinations.some(destination => destination.id === departure));
@@ -832,8 +1014,9 @@ async function loadWorldFlight(departure) {
   const runway = departure === 'boeing' ? region.runway : null;
   const seed = await terrain.seed(destination.x, destination.z);
   const track = JSON.parse(api.SelectWorldFlight(region.name, JSON.stringify(destination),
-    runway && JSON.stringify(runway), seed));
+    runway && JSON.stringify(runway), seed, aircraftId));
   selectedDeparture = departure;
+  selectedAircraft = track.aircraft.id;
   populateWorldDepartures(worldCatalog);
   return { ...track, terrain };
 }
@@ -843,6 +1026,8 @@ async function instantiateChoice(choice) {
   if (choice.id === 'flight:amiga-interceptor') return loadOriginalFlight();
   if (choice.id === 'flight:world') return loadWorldFlight(selectedDeparture);
   if (choice.id === 'flight:interceptor-bay') return JSON.parse(api.SelectFlight());
+  if (choice.id === 'flight:training') return JSON.parse(api.SelectFlightTraining());
+  if (choice.id === 'experience:seattle-drive') return loadSeattleDrive(api, worldCatalog);
   if (choice.id.startsWith('experience:')) return JSON.parse(api.SelectExperience(choice.id.slice(11)));
   if (choice.id.startsWith('source:'))
     return loadHostedSource(compatibility.sourcePhysicsActive === true, choice.id.slice(7));
@@ -850,7 +1035,7 @@ async function instantiateChoice(choice) {
   throw new Error('The selected course has an unsupported identifier.');
 }
 
-async function selectGameMode(mode, departure = selectedDeparture) {
+async function selectGameMode(mode, departure = selectedDeparture, aircraftId = selectedAircraft) {
   if (!ready || trackBusy) return;
   try {
     if (capture.recorder) throw new Error('Stop recording before changing experience.');
@@ -858,14 +1043,17 @@ async function selectGameMode(mode, departure = selectedDeparture) {
     setTrackBusy(true);
     let track;
     if (drivingExperiences[mode]) {
-      track = JSON.parse(api.SelectExperience(mode));
-      selectedTrack = `experience:${mode}`;
+      const id = `experience:${mode}`;
+      track = await instantiateChoice(trackChoices.find(choice => choice.id === id));
+      selectedTrack = id;
     } else if (mode.startsWith('flight')) {
       if (!state.flight && !drivingExperiences[compatibility.experience]) lastRacingTrack = selectedTrack;
-      track = mode === 'flight-world' ? await loadWorldFlight(departure)
-        : mode === 'flight-original' ? await loadOriginalFlight() : JSON.parse(api.SelectFlight());
+      track = mode === 'flight-world' ? await loadWorldFlight(departure, aircraftId)
+        : mode === 'flight-original' ? await loadOriginalFlight()
+          : mode === 'flight-training' ? JSON.parse(api.SelectFlightTraining()) : JSON.parse(api.SelectFlight());
       selectedTrack = mode === 'flight-world' ? 'flight:world'
-        : mode === 'flight-original' ? 'flight:amiga-interceptor' : 'flight:interceptor-bay';
+        : mode === 'flight-original' ? 'flight:amiga-interceptor'
+          : mode === 'flight-training' ? 'flight:training' : 'flight:interceptor-bay';
     } else {
       if (state.flight || drivingExperiences[compatibility.experience]) {
         const previous = trackChoices.find(choice => choice.id === lastRacingTrack &&
@@ -909,6 +1097,14 @@ async function configureSourceAvailability() {
     throw new Error('The original-flight package configuration is invalid.');
   if (configuration.worldFlightUrl != null && typeof configuration.worldFlightUrl !== 'string')
     throw new Error('The World Flight package configuration is invalid.');
+  if (configuration.worldFlightUrl) {
+    try {
+      worldCatalog = await readWorldCatalog(configuration.worldFlightUrl);
+      seattleDriveUnavailable = seattleRegion(worldCatalog) ? null : 'This World Flight package has no Seattle roads.';
+    } catch (error) {
+      seattleDriveUnavailable = `Could not read the terrain catalog. ${error.message}`;
+    }
+  }
   updateSourceOptions();
   if (configuration.tracks !== undefined && !Array.isArray(configuration.tracks))
     throw new Error('The configured track catalog is invalid.');
@@ -992,17 +1188,20 @@ function tick(now) {
     state = JSON.parse(state?.flight
       ? api.FlightFrame(Math.min(dt, 0.25), activeInput.roll, activeInput.pitch, activeInput.yaw,
         activeInput.throttle, activeInput.afterburner, activeInput.brake)
-      : api.Frame(Math.min(dt, 0.25), activeInput.steer, activeInput.throttle, activeInput.brake, activeInput.boost));
+      : api.Frame(state?.drive && !scene.hasDetailedGround(state.player) ? 0 : Math.min(dt, 0.25),
+        activeInput.steer, activeInput.throttle, activeInput.brake, activeInput.boost));
     simulationMs = simulationMs * 0.95 + (performance.now() - simulationStart) * 0.05;
     if (!state.player || !Number.isFinite(state.player.x) || !Number.isFinite(state.player.speed)) {
       throw new Error('The C# simulation returned an invalid vehicle snapshot.');
     }
     const renderDt = Math.min(dt, 0.1);
-    const { draws, camera: view } = state.flight ? scene.update(state, renderDt, camera)
+    const renderFrame = state.flight ? scene.update(state, renderDt, camera)
       : scene.update(state, renderDt, camera, compatibility);
     const submissionStart = performance.now();
-    graphics.render(draws, view, now / 1000);
+    const submitted = graphics.render(renderFrame.draws, renderFrame.camera, now / 1000);
     submissionMs = submissionMs * 0.95 + (performance.now() - submissionStart) * 0.05;
+    if (submitted && landmarkLabels.enabled && scene.terrain && flightPlaying())
+      landmarkLabels.update(renderFrame.landmarkAnchors ?? [], renderFrame.camera);
     if (!ready && !trackBusy && graphics.completedFrames > 0) {
       ready = true;
       clearTimeout(startupDeadline);
@@ -1035,6 +1234,8 @@ function bind() {
   on('garage-button', 'garage');
   on('garage-pause', 'garage');
   on('garage-finish', 'garage');
+  on('seattle-autopilot', 'seattle-autopilot');
+  $('seattle-destination').addEventListener('change', event => { void action('seattle-destination', event.target.value).catch(fail); });
   document.querySelector('.brand').addEventListener('click', event => {
     if (!ready || failed) return;
     event.preventDefault();
@@ -1061,9 +1262,12 @@ function bind() {
   }
   on('camera-button', 'camera');
   on('flight-hud-button', 'flight-hud');
-  for (const button of $('flight-view-controls').querySelectorAll('button')) {
+  for (const button of $('flight-view-controls').querySelectorAll('[data-view]')) {
     button.addEventListener('click', () => { void action('flight-view', button.dataset.view).catch(fail); });
   }
+  on('world-label-button', 'world-labels');
+  on('world-road-button', 'world-roads');
+  on('training-scan-button', 'scan');
   on('sound-button', 'mute');
   on('fullscreen-button', 'fullscreen');
   on('help-button', 'help');
@@ -1102,6 +1306,14 @@ function bind() {
   for (const id of ['world-departure', 'world-departure-menu']) {
     $(id).addEventListener('change', event => { void selectGameMode('flight-world', event.target.value); });
   }
+  $('world-aircraft-menu').addEventListener('change', event => {
+    const id = event.target.value;
+    if (!worldAircraft || state?.phase !== 'ready' || !worldAircraftProfiles.some(profile => profile.id === id)) {
+      updateWorldAircraftControl();
+      return;
+    }
+    if (id !== selectedAircraft) void selectGameMode('flight-world', selectedDeparture, id);
+  });
   for (const button of document.querySelectorAll('.experience-picker [data-experience]')) button.addEventListener('click', () => {
     const mode = button.dataset.experience;
     void selectGameMode(mode === 'flight' && originalFlightAvailable() ? 'flight-original' : mode);
@@ -1134,6 +1346,7 @@ function bind() {
       replaceTrack(track);
       if ($('help-dialog').open) $('help-dialog').close();
       toast(choice.id === 'flight:world' ? 'World Flight / geographic terrain and Modern jet physics.'
+        : choice.id === 'experience:seattle-drive' ? 'Seattle Scenic Drive / mapped surface streets and offline GPS.'
         : `Loaded ${choice.name} / ${special ? 'authored driving experience' : originalFlight ? 'original Amiga flight' : flying ? 'authored jet-flight' : classic ? 'Classic reference' : 'Modern'} physics.`);
     } catch (error) {
       selectedTrack = previous;
@@ -1380,20 +1593,30 @@ async function boot() {
   if (!api?.Initialize || !api?.Frame || !api?.Command || !api?.Observe ||
       !api?.DescribeCompatibility || !api?.LoadPrivateGeometry || !api?.ResetAuthoredTrack ||
       !api?.LoadSourcePackage || !api?.SetSourcePhysics || !api?.AuthoredTracks || !api?.SelectAuthoredTrack ||
-      !api?.SelectFlight || !api?.SelectRacing || !api?.FlightFrame ||
+      !api?.SelectFlight || !api?.SelectFlightTraining || !api?.SelectRacing || !api?.FlightFrame ||
       !api?.SelectOriginalFlight || !api?.LoadFlightPackage || !api?.LoadFlightDisk || !api?.SelectExperience ||
-      !api?.SelectWorldFlight || !api?.AddWorldTerrainTile || !api?.RemoveWorldTerrainTile) {
+      !api?.SelectWorldFlight || !api?.WorldFlightAircraft || !api?.AddWorldTerrainTile || !api?.RemoveWorldTerrainTile ||
+      !api?.SelectSeattleDrive || !api?.SeattleDriveAreaInfo || !api?.SeattleDrivePlan) {
     throw new Error('The compiled C# simulation exports are missing. No JavaScript gameplay fallback was started.');
   }
   await runtime.runMain();
+  worldAircraftProfiles = JSON.parse(api.WorldFlightAircraft());
+  for (const profile of worldAircraftProfiles) {
+    const option = document.createElement('option');
+    option.value = profile.id;
+    option.textContent = profile.name;
+    $('world-aircraft-menu').append(option);
+  }
   trackChoices = JSON.parse(api.AuthoredTracks()).map(choice => ({
     ...choice, id: `included:${choice.id}`, available: true
   }));
   for (const [mode, details] of Object.entries(drivingExperiences))
     trackChoices.push({ id: `experience:${mode}`, name: details.course, group: details.group,
-      available: true, description: details.description });
+      available: mode !== 'seattle-drive', description: details.description });
   trackChoices.push({ id: 'flight:interceptor-bay', name: 'Interceptor Bay / jet flight',
     group: 'Flight activity', available: true, description: 'Authored free-flight prototype; not original Amiga dynamics.' });
+  trackChoices.push({ id: 'flight:training', name: 'Coppercloud Range / Flight Training',
+    group: 'Flight activity', available: true, description: 'Fictional airborne scanner practice with a moving drone and a ground beacon.' });
   trackChoices.push({ id: 'flight:amiga-interceptor', name: 'Amiga Interceptor / original flight',
     group: 'Flight activity', available: false, reason: 'Load an original flight ADF/ZIP or configure the external original-flight package.' });
   trackChoices.push({ id: 'flight:world', name: 'World Flight / United States',
@@ -1427,7 +1650,12 @@ async function boot() {
       sourceConfigurationAvailable: sourceConfiguration.sourcePackageAvailable,
       originalFlightConfigurationAvailable: sourceConfiguration.flightPackageAvailable === true,
       worldFlightConfigurationAvailable: Boolean(sourceConfiguration.worldFlightUrl),
-      geographicFlight: scene.terrain ? scene.diagnostics() : null,
+      geographicFlight: worldAircraft ? { ...scene.diagnostics(), renderedAircraftId: scene.aircraftId } : null,
+      geographicDrive: state.drive ? { ...scene.diagnostics(), streets: scene.world.streets.length,
+        detailedGround: scene.hasDetailedGround(state.player), destination: state.drive.destinationId,
+        plan: structuredClone(displayedDrivePlan) } : null,
+      worldAircraft: worldAircraft && { ...worldAircraft },
+      landmarkLabels: worldAircraft ? { enabled: landmarkLabels.enabled, visible: [...landmarkLabels.visible] } : null,
       flightWorld: state.flight && scene.world ? {
         sourceSurfaces: scene.world.sourceWorld?.surfaces.length ?? 0,
         sourceObjects: scene.world.sourceWorld?.objects.length ?? 0,

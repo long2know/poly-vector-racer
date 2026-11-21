@@ -164,9 +164,11 @@ test('dispose deletes every pending fence and the query without counting them as
 test('quality validation preserves the last valid selection and its shadow allocation', () => {
   const { graphics } = policy();
   const sizes = [];
-  graphics.createShadow = size => sizes.push(size);
+  graphics.createShadow = size => { sizes.push(size); graphics.shadowBuffer = {}; };
+  graphics.setQuality('high');
   graphics.setQuality('high');
   assert.equal(graphics.quality, 'high');
+  graphics.setQuality('balanced');
   graphics.setQuality('balanced');
   assert.equal(graphics.quality, 'balanced');
   for (const invalid of ['HIGH', '', null, undefined, 'automatic']) {
@@ -174,6 +176,37 @@ test('quality validation preserves the last valid selection and its shadow alloc
     assert.equal(graphics.quality, 'balanced');
   }
   assert.deepEqual(sizes, [2048, 1024]);
+});
+
+test('compact scenery preserves positions and class IDs with 40% fewer uploaded bytes', () => {
+  const uploads = [], attributes = [], deleted = [];
+  const gl = {
+    ARRAY_BUFFER: 34962, STATIC_DRAW: 35044, FLOAT: 5126, SHORT: 5122, UNSIGNED_BYTE: 5121,
+    createVertexArray: () => ({}), createBuffer: () => ({}), bindVertexArray() {}, bindBuffer() {},
+    bufferData: (_target, data) => uploads.push(data),
+    enableVertexAttribArray() {}, vertexAttribPointer: (...args) => attributes.push(args),
+    deleteBuffer: buffer => deleted.push(buffer), deleteVertexArray() {},
+  };
+  const graphics = Object.assign(Object.create(Graphics.prototype), { gl, meshes: new Set(), meshBytes: 0 });
+  const scenery = { vertices: [1.25, 641.52, -111.32, .5, -.8, -.33166, .065, .235, .29, 11] };
+  const compact = graphics.mesh(scenery, true), regular = graphics.mesh(scenery);
+  const data = new DataView(uploads[0]);
+  assert.deepEqual([0, 4, 8].map(i => data.getFloat32(i, true)), [...uploads[1].slice(0, 3)]);
+  assert.ok([12, 14, 16].every((offset, i) => Math.abs(data.getInt16(offset, true) / 32767 - scenery.vertices[i + 3]) < .00004));
+  assert.ok([18, 19, 20].every((offset, i) => Math.abs(data.getUint8(offset) / 255 - scenery.vertices[i + 6]) < .002));
+  assert.equal(data.getUint8(21), 11);
+  assert.deepEqual(attributes.slice(0, 4), [
+    [0, 3, gl.FLOAT, false, 24, 0], [1, 3, gl.SHORT, true, 24, 12],
+    [2, 3, gl.UNSIGNED_BYTE, true, 24, 18], [3, 1, gl.UNSIGNED_BYTE, false, 24, 21],
+  ]);
+  assert.equal(graphics.meshBytes, regular.bytes + compact.bytes);
+  assert.equal(compact.bytes, regular.bytes * .6);
+  graphics.releaseMesh(compact);
+  graphics.releaseMesh(compact);
+  assert.equal(graphics.meshBytes, regular.bytes);
+  assert.deepEqual(deleted, [compact.buffer]);
+  graphics.releaseMesh(regular);
+  assert.equal(graphics.meshBytes, 0);
 });
 
 // Independent analytic expectation for the fixture's real fragment output. Its
@@ -274,8 +307,8 @@ async function browserFixture(moduleUrl) {
     const ghostGeometry = new Geometry();
     ghostGeometry.quad([-1, -1, -0.5], [1, -1, -0.5], [1, 1, -0.5], [-1, 1, -0.5], [0.65, 0.25, 1]);
     const ghost = graphics.mesh(ghostGeometry);
-    const read = async draws => {
-      if (!graphics.render(draws, camera, 0)) throw new Error('The drained GPU queue rejected a transparency frame');
+    const read = async (draws, view = camera) => {
+      if (!graphics.render(draws, view, 0)) throw new Error('The drained GPU queue rejected a fixture frame');
       const pixel = new Uint8Array(4);
       gl.readPixels(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
       await drain();
@@ -291,6 +324,22 @@ async function browserFixture(moduleUrl) {
       depthWrite: gl.getParameter(gl.DEPTH_WRITEMASK), blending: gl.isEnabled(gl.BLEND),
       opacity: gl.getUniform(graphics.scene.handle, graphics.scene.uniforms.opacity),
       error: gl.getError(),
+    };
+    const roadView = { ...camera, logarithmicDepth: true, far: 25000 }, roadSlice = material => {
+      const geometry = new Geometry();
+      geometry.quad([-1, -.28, 0], [1, -.28, 0], [1, .28, 0], [-1, .28, 0], [.35, .37, .33], material);
+      return [{ mesh: graphics.mesh(geometry, true), shadow: false }];
+    };
+    const road = [6, 7, 8, 9].map(roadSlice);
+    result.roadPalette = [];
+    for (const draws of road) result.roadPalette.push({
+      terrain: await read(draws, roadView),
+      map: await read(draws, { ...roadView, mapRoads: true }),
+    });
+    const ground = { ...roadView, mapRoads: true, roadLowering: [1.14, .905, .68] };
+    result.groundRoads = {
+      surfaceAtFlightHeight: await read(road[0], ground), bridgeAtFlightHeight: await read(road[3], ground),
+      sky: await read([], ground), error: gl.getError(),
     };
     const { FlightScene } = await import(new URL('../flight-scene.js', moduleUrl));
     canvas.style.width = '640px';
@@ -391,7 +440,7 @@ async function browserFixture(moduleUrl) {
   }
 }
 
-test('real WebGL2: queue, High/Balanced shadows, transparency and flight ground depth',
+test('real WebGL2: queue, shadows, transparency, flight depth and map roads',
   { skip: process.env.GRAPHICS_BROWSER !== '1', timeout: 60000 }, async () => {
     const base = new URL(process.env.STUNT_URL ?? 'http://127.0.0.1:5188/stunt-car-racer/');
     assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname));
@@ -517,6 +566,16 @@ test('real WebGL2: queue, High/Balanced shadows, transparency and flight ground 
         assert.ok(Math.abs(alpha.blended[channel] - expected) <= 3,
           'ghosts must blend over opaque geometry even when submitted first');
       }
+      const [freeway, arterial, local, bridge] = result.roadPalette;
+      assert.ok(freeway.map[2] > freeway.map[0] + 35, `readable blue freeway: ${freeway.map}`);
+      assert.ok(arterial.map[0] > arterial.map[2] + 35, `readable amber arterial: ${arterial.map}`);
+      assert.ok(local.map.slice(0, 3).every((channel, i) => channel > local.terrain[i] + 30),
+        `pale local street: ${local.map} vs. ${local.terrain}`);
+      assert.deepEqual(bridge.map, freeway.map, 'the same class has the same color on a bridge');
+      assert.equal(result.groundRoads.error, 0);
+      assert.deepEqual(result.groundRoads.surfaceAtFlightHeight, result.groundRoads.sky,
+        'ground rendering lowers the actual surface geometry, not just its diagnostics');
+      assert.deepEqual(result.groundRoads.bridgeAtFlightHeight, bridge.map, 'ground rendering does not lower a bridge');
     } finally {
       for (const request of pending.values()) clearTimeout(request.timeout);
       socket?.close();

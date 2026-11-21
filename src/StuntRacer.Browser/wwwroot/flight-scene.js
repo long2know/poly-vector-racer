@@ -2,6 +2,7 @@ import { Builder } from './scene.js';
 import { add, clamp, cross, lerp3, mix, multiply, normalize, pose, random, scale, sub, transform } from './engine/math.js';
 import { triangulate } from './engine/triangulate.js';
 import { appendWalker, makeServiceCar, makeWalkerRig } from './world-actors.js';
+import { airframes } from './flight-airframes.js';
 
 const steel = [0.31, 0.36, 0.38], dark = [0.045, 0.065, 0.08], orange = [1, 0.27, 0.045];
 const phosphor = [0.23, 0.87, 0.53];
@@ -70,10 +71,18 @@ function makeCanopy() {
   return glass;
 }
 
-function makeGear() {
+function makeGear(airframe, clearance) {
   const gear = new Builder();
-  for (const [x, z] of [[-1.1, -2], [1.1, -2], [0, 4.1]]) {
-    gear.beam([x * 0.65, -0.6, z], [x, -2.0, z], 0.1, [0.6, 0.64, 0.62], 2, 8);
+  const wheels = airframe ? [
+    ...[-1, 1].map(side => {
+      const [x, z, anchorX, anchorY] = airframe.mainGear;
+      return [side * x, z, side * anchorX, anchorY];
+    }),
+    airframe.noseGear,
+  ] : [[-1.1, -2], [1.1, -2], [0, 4.1]];
+  const lift = airframe ? clearance - 2.4 : 0;
+  for (const [x, z, anchorX = x * .65, anchorY = -.6] of wheels) {
+    gear.beam([anchorX, anchorY + lift, z], [x, -2.0, z], 0.1, [0.6, 0.64, 0.62], 2, 8);
     gear.cylinder([x, -2.05, z], 0.35, 0.28, dark, 0, 12);
   }
   return gear;
@@ -238,9 +247,12 @@ function makeWorld(world) {
 }
 
 export class FlightScene {
-  constructor(graphics, world) {
+  constructor(graphics, world, aircraftId = 'f18') {
     this.graphics = graphics;
     this.world = world;
+    const airframe = Object.hasOwn(airframes, aircraftId) ? airframes[aircraftId] : null;
+    this.aircraftId = airframe ? aircraftId : 'f18';
+    this.cameraScale = airframe?.cameraScale ?? 1;
     const landmarks = [];
     for (const object of world.sourceWorld?.objects ?? []) {
       const id = Number(object.name.match(/^Original scenery (\d+)$/)?.[1]);
@@ -257,10 +269,10 @@ export class FlightScene {
         x: island.centerX + x * island.width / 2, z: island.centerZ + z * island.length / 2
       }))
     };
-    for (const [name, mesh] of Object.entries(geometry)) this[name] = graphics.mesh(mesh);
-    this.jet = graphics.mesh(makeJet());
+    for (const [name, mesh] of Object.entries(geometry)) this[name] = mesh.vertices.length ? graphics.mesh(mesh) : null;
+    this.jet = graphics.mesh(airframe ? airframe.build() : makeJet());
     this.canopy = graphics.mesh(makeCanopy());
-    this.gear = graphics.mesh(makeGear());
+    this.gear = graphics.mesh(makeGear(airframe, world.gearClearance ?? 2.4));
     const interior = makeCockpit();
     this.cockpit = graphics.mesh(interior.shell);
     this.combiner = graphics.mesh(interior.glass);
@@ -286,11 +298,11 @@ export class FlightScene {
     }
     this.instrumentScales = graphics.mesh(scales);
     const flame = new Builder();
+    const [exhaustX, exhaustY, exhaustZ, exhaustRadius] = airframe?.nozzle ?? [.72, -.25, -6.6, .42];
     for (const side of [-1, 1])
-      flame.beam([side * 0.72, -0.25, -6.6], [side * 0.72, -0.25, -11.2], 0.42, [0.23, 0.47, 1], 4, 10);
+      flame.beam([side * exhaustX, exhaustY, exhaustZ], [side * exhaustX, exhaustY, exhaustZ - 4.6],
+        exhaustRadius, [.23, .47, 1], 4, 10);
     this.flame = graphics.mesh(flame);
-    this.walkerRig = makeWalkerRig(graphics);
-    this.serviceCar = makeServiceCar(graphics);
     this.previewTime = 0;
     this.setFlightView('forward');
   }
@@ -317,9 +329,9 @@ export class FlightScene {
     const up = [aircraft.up.x, aircraft.up.y, aircraft.up.z];
     const ready = state.phase === 'ready', cockpit = !ready && mode === 'cockpit';
     const destination = this.world.geography?.destination;
-    const draws = destination ? [] : [{ mesh: this.sea, model: pose([aircraft.x, 0, aircraft.z]), shadow: false }];
-    if (this.ground.count !== 0) draws.push({ mesh: this.ground });
-    if (this.buildings.count !== 0) draws.push({ mesh: this.buildings });
+    const draws = this.sea ? [{ mesh: this.sea, model: pose([aircraft.x, 0, aircraft.z]), shadow: false }] : [];
+    if (this.ground) draws.push({ mesh: this.ground });
+    if (this.buildings) draws.push({ mesh: this.buildings });
     if (state.flight.activity) {
       const { apron, actors } = state.flight.activity;
       if (!this.activityApron) {
@@ -332,11 +344,13 @@ export class FlightScene {
       }
       draws.push(this.activityApron);
       for (const actor of actors) {
-        if (actor.kind === 'walker') appendWalker(draws, this.walkerRig, actor);
-        else if (actor.kind === 'aircraft' || actor.kind === 'service-car')
-          draws.push({ mesh: actor.kind === 'aircraft' ? this.jet : this.serviceCar,
-            model: pose([actor.x, actor.y, actor.z], actor.yaw, actor.pitch, actor.roll) });
-        else throw new Error(`Unknown ambient world actor: ${actor.kind}`);
+        if (actor.kind === 'walker') {
+          this.walkerRig ??= makeWalkerRig(this.graphics);
+          appendWalker(draws, this.walkerRig, actor);
+        } else if (actor.kind === 'aircraft' || actor.kind === 'service-car') {
+          const mesh = actor.kind === 'aircraft' ? this.jet : (this.serviceCar ??= makeServiceCar(this.graphics));
+          draws.push({ mesh, model: pose([actor.x, actor.y, actor.z], actor.yaw, actor.pitch, actor.roll) });
+        } else throw new Error(`Unknown ambient world actor: ${actor.kind}`);
       }
     }
     if (cockpit) {
@@ -371,14 +385,14 @@ export class FlightScene {
       cameraUp = up;
     } else if (preview) {
       const angle = aircraft.yaw + 0.7 + Math.sin(this.previewTime * 0.15) * 0.1;
-      eye = add(position, [-Math.sin(angle) * 22, 9, -Math.cos(angle) * 22]);
+      eye = add(position, scale([-Math.sin(angle) * 22, 9, -Math.cos(angle) * 22], this.cameraScale));
       target = add(position, [0, 0.5, 0]);
     } else {
       // Orbit about the aircraft's heading, not its bank: a roll must not bring the camera under the runway.
-      const distance = 26 + Math.min(aircraft.speed * 0.025, 10);
-      const radius = Math.hypot(distance, 8);
+      const distance = (26 + Math.min(aircraft.speed * 0.025, 10)) * this.cameraScale;
+      const rise = 8 * this.cameraScale, radius = Math.hypot(distance, rise);
       const clearance = aircraft.onGround ? 2 : this.world.seaHeight + 1 - aircraft.y;
-      const baseElevation = Math.atan2(8, distance);
+      const baseElevation = Math.atan2(rise, distance);
       const minimumElevation = Math.asin(clamp(clearance / radius, -1, .95));
       if (aircraft.onGround && this.flightView === 'orbit')
         this.viewPitch = Math.max(this.viewPitch, minimumElevation - baseElevation);
@@ -421,5 +435,13 @@ export class FlightScene {
         const [x, z] = this.mapPoint(point.x, point.z);
         return `${index ? 'L' : 'M'}${x.toFixed(2)} ${z.toFixed(2)}`;
       }).join(' ') + ' Z').join(' ');
+  }
+
+  dispose() {
+    const meshes = [this.sea, this.ground, this.buildings, this.jet, this.canopy, this.gear, this.cockpit, this.combiner,
+      this.instrumentLine, this.instrumentNeedle, this.instrumentBar, this.instrumentScales, this.flame,
+      this.walkerRig?.body, this.walkerRig?.limb, this.serviceCar];
+    if (this.activityApron) meshes.push(this.activityApron.mesh);
+    for (const mesh of meshes) if (mesh) this.graphics.releaseMesh(mesh);
   }
 }

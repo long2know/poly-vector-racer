@@ -87,6 +87,9 @@ continues to work, including packages without a road layer.
   records a fallback estimate. Landmark models such as the Space Needle,
   T-Mobile Park (with an open diamond beside Lumen Field), the three Amazon
   Spheres, Transamerica Pyramid and Golden Gate Bridge are newly authored.
+  Optional labels point to nearby authored landmarks, to the modeled airport,
+  and to selected catalog targets when their terrain is visible. This is not a
+  geographic inventory.
 - Seattle freeways and arterials cover the map window from 122.379°W to
   122.287°W and 47.566°N to 47.662°N, including portions of I-5, I-90, SR 99
   and their interchanges. Local streets are mapped in the smaller window
@@ -94,14 +97,23 @@ continues to work, including packages without a road layer.
   Queen Anne and South Lake Union to the Ship Canal neighborhoods. No other
   city gets a road layer. Motorway/trunk, primary/secondary/tertiary and
   residential/unclassified/living-street ways each have distinct visual
-  widths and colors; service drives, paths, tunnels and covered ways are left
-  out. Marked spans crossing the window edge are omitted rather than truncated
-  over water. Bridge deck elevations are visual estimates, not measured clearances.
-- Buildings and roads are visual scenery, not collision surfaces. Geographic
+  widths and colors. Map Roads switches the same geometry to pale local
+  streets, amber arterials and blue freeways; it adds no coverage. Service
+  drives, paths, tunnels and covered ways are left out. Marked spans crossing
+  the window edge are omitted rather than truncated over water. Bridge deck
+  elevations are visual estimates, not measured clearances.
+- Low-poly conifers grow in procedural clusters on nearby rendered 64 m and
+  32 m terrain. They omit wet, steep and high terrain, the modeled runway and
+  its vicinity, and central Seattle and San Francisco. Their positions do not
+  come from tree surveys or land-cover maps, and they have no collision.
+- The rendered building and road meshes are not collision surfaces. Geographic
   ground and the runway use the same height data as flight
   contact. World Flight uses a supersonic variant of the Modern game model.
   Its Mach number is computed from its actual velocity and a simple atmosphere;
   it does not change the Amiga or Interceptor Bay physics.
+- The F-14, F-15 and SR-71 exteriors are newly authored low-poly meshes, not
+  imports. They share the game's simplified first-person cockpit; the F/A-18
+  retains its original model.
 
 ## Data credits and licensing
 
@@ -157,4 +169,18 @@ both road edges); ground roads are suppressed on water faces, with actual
 mapped bridges overriding that rule. Tile meshes are bounded and released
 when no longer used or when leaving the scene. Large tiles are tessellated
 over several frames instead of uploading the whole city at once. The layer
-adds no collision or live map requests.
+adds no collision or live map requests. The palette switch works on the
+existing buffers. The ground view places surface ribbons nearly flush with the
+terrain rather than exaggerating their lift for flight; mapped bridges keep
+their visual decks. The ground view can share the validated road document
+with the renderer through `WorldTerrain.loadRoads()`.
+
+The scenery renderer batches trees into bounded, kilometre-scale patches
+sampled against the currently drawn terrain triangles. Their horizontal
+placement is stable across terrain detail changes; heights follow the visible
+surface. Trees, roads, terrain and landmark anchors use the same local origin
+as the player camera. `WorldScenery` lets flight and ground views share these
+layers without sharing vehicle meshes or physics. Scenery uses 24-byte GPU
+vertices instead of 40-byte vertices, keeping positions at full precision
+while storing normals and colors in normalized integer attributes. Scene
+diagnostics report total vertex-buffer bytes, not browser or driver memory.

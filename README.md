@@ -82,21 +82,53 @@ Both support keyboard, controller and two-thumb touch. Neither is a real-world
 aircraft-training model.
 
 **World Flight / United States** is a separate Modern flight experience. Choose
-**World Flight** on the first menu, then a **Departure**. Take off at Boeing
-Field, fly over Seattle and Puget Sound, or take an airborne sightseeing
-departure. Rainier, the San Francisco Bay, Yosemite, and Grand Canyon have
-32-metre elevation cores. Seattle and San Francisco have OpenStreetMap
-buildings and authored landmarks, including the Golden Gate Bridge.
-Coarser terrain covers the lower 48, Alaska and Hawaii.
+**World Flight** on the first menu, then pick a **Departure** and **Aircraft**.
+Take off at Boeing Field, fly over Seattle and Puget Sound, or take an airborne
+sightseeing departure. Rainier, the San Francisco Bay, Yosemite, and Grand Canyon
+have 32-metre elevation cores. Seattle and San Francisco have OpenStreetMap
+buildings and authored landmarks, including the Golden Gate Bridge. The
+offline package has mapped streets around Seattle only; coarser terrain covers
+the lower 48, Alaska and Hawaii.
 
-The **World Flight** jet can reach Mach 1.8: retract the gear with **G**, hold
-**+** to set full throttle, then hold **Space** for afterburner. **Cascades /
-high-altitude cruise** starts airborne and lets you accelerate immediately.
+The default F/A-18 has a Mach 1.8 game speed limit. The F-14, F-15 and SR-71
+Blackbird have distinct silhouettes and flight tuning. Change aircraft in the
+**Garage** before launch; it stays selected when you change departures. For
+the SR-71, try **Cascades / high-altitude cruise**. It starts already airborne
+with gear up: set full throttle with **+** or **PWR +**, then hold **Space**
+or **BURN** for afterburner. When starting from a runway, use **G** to retract
+the gear after takeoff.
+
+In World Flight, **Labels** shows names above visible landmarks. **Map Roads**
+changes the appearance of mapped streets, not their coverage, and is unavailable
+in regions without street data. The scenery controls work by mouse or touch
+and are independent of **V**.
 In third-person flight, press **V** or click **HUD** to hide or restore flight
 telemetry; camera, pause, and touch controls still work. **C** switches to the
 jet cockpit with a clear canopy, a glass HUD and working instruments.
 The Amiga physics and map remain independent. See [World Flight setup and data credits](tools/WorldFlight/README.md)
 to build and mount the optional terrain package.
+
+**Seattle Scenic Drive** is separate from World Flight and Meridian City. It
+uses the same optional World Flight ZIP, including its Seattle OpenStreetMap
+roads, scenery and detailed terrain. In the **Garage**, select **Seattle** and
+start the drive. Choose a stop in **Offline GPS** to show the street route on
+the minimap, or enable **Autopilot** to let the game car drive and stop there.
+Steering, accelerating, braking or boosting immediately returns control to you;
+the GPS stays available. Stops are street approaches to Seattle Great Wheel,
+Space Needle, Amazon Spheres, Lumen Field and T-Mobile Park.
+
+Driving is limited to connected downtown surface streets. No bridges, freeways,
+live traffic or routing services are used. The offline map has no lane,
+one-way or turn-restriction rules; use it only in the game. A ZIP without
+Seattle roads leaves this experience unavailable but does not disable flight.
+
+**Flight Training / Coppercloud Range** is a separate fictional island
+activity; it needs no terrain package or original disk. Select it from
+**Game Mode** and launch already airborne. Follow the initial heading toward
+the moving practice drone and the ground beacon. Scan each in turn when the
+range dashboard shows it is close enough. Both are non-destructive proximity
+tags, and neither appears in World Flight, Interceptor Bay, or the Amiga world.
+Tag both to clear the range; **Garage** or **One More Run** resets the score.
 
 Optional **Classic/reference** mode now has an independently authored,
 Amiga-derived three-contact integer player runtime and an actual externally
@@ -161,6 +193,10 @@ set throttle. The percentage shows the selected setting, not the current
 engine response. Hold **BURN** or slide up from **PWR +** for afterburner at
 high power; release to stop it. Brakes, gear and recovery are separate touch
 buttons; original flight adds a hook button.
+
+In **Flight Training** only, press **T**, click or tap the **SCAN** button,
+or click the right stick. Scanning has a short recharge; pausing stops
+the drone and recharge and disables scans.
 
 **C** switches between cockpit and chase; **V** toggles the chase overlay.
 Use the **number row or numpad** for snap views: **4/6** left/right, **2**
@@ -530,6 +566,20 @@ steering/pause/boost and restoration.
 explicitly unsupported circuits).
 `STUNT_BROWSER_FOCUS=flight` runs the focused real-WASM flight input/camera/mobile
 checks; the default run includes them after the racing checks.
+`STUNT_BROWSER_FOCUS=flight-training` checks the native range through keyboard
+and phone input; `STUNT_BROWSER_FOCUS=world-flight-settings` checks the aircraft
+selector, landmark projection and road styling with the hosted terrain ZIP.
+`STUNT_BROWSER_FOCUS=world-flight-speed` runs the focused SR-71 Mach 3 check
+at the Cascades departure without preceding mobile or sightseeing scenes.
+`STUNT_BROWSER_FOCUS=seattle-drive` checks the real ZIP's street map, scenery,
+GPS arrival, pause, replanning and keyboard takeover in Chrome. The related
+`seattle-drive-legacy` and `seattle-drive-no-package` focuses check unavailable
+states. To run the deterministic native arrival and takeover checks:
+
+```bash
+bash scripts/dotnet.sh run --project tests/StuntRacer.SeattleDriveChecks -c Release -- /absolute/path/world-flight.zip
+```
+
 `STUNT_BROWSER_FOCUS=experiences` exercises the visible experience buttons,
 city traffic/walkers, street races, proving-ground gates, a genuinely driven
 Stunts loop, the original bridge tour and city touch layouts.

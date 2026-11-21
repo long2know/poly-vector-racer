@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/StuntRacer.Core/StuntRacer.Core.csproj" />
+    <ProjectReference Include="../../src/StuntRacer.Flight/StuntRacer.Flight.csproj" />
+  </ItemGroup>
+</Project>
