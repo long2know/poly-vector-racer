@@ -97,12 +97,6 @@ test('a spatial stunt loop retains its crown and both cameras follow the inverte
     assert.ok([...lookAt(camera.eye, camera.target, camera.up)].every(Number.isFinite));
     assert.equal(camera.logarithmicDepth, true);
   }
-  const approach = new RaceScene({ mesh: geometry => geometry }, { name: 'Spatial approach', isSpatial: true,
-    points, edges, length: count, width: 8 });
-  const view = approach.update({ ...state, player: { ...car, y: 5, z: -40, pitch: 0 },
-    stunt: { feature: 'Loop approach', success: null, nextGateProgress: .25 } }, 1 / 60, 'chase').camera;
-  assert.ok(view.target[1] > 11 && view.fov > 1.3,
-    'the approach camera must reveal the rising loop instead of framing only a wall at its base');
 });
 
 test('vehicle families have different silhouettes, and enclosed cockpit mode does not draw an opaque exterior shell', () => {

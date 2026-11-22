@@ -2,6 +2,7 @@ import { Geometry } from './engine/graphics.js';
 import { add, angleMix, cross, lerp3, mix, multiply, normalize, pose, random, scale, sub, transform } from './engine/math.js';
 import { buildCourseScenery } from './course-scenery.js';
 import { buildEv6 } from './ev6-geometry.js';
+import { loopEdgeTint, prepareStuntLoop, stuntChaseCamera } from './stunt-approach.js';
 
 const colors = {
   steel: [0.20, 0.25, 0.25], dark: [0.055, 0.068, 0.075], orange: [0.98, 0.24, 0.035],
@@ -102,23 +103,45 @@ function makeLandscape(track) {
   return { land, props };
 }
 
-function makeTrack(track) {
+function loopArrows(mesh, loop, p, q, end) {
+  for (const { s, color } of loop.arrows) {
+    const length = 3.6, from = Math.max(s, p.s), to = Math.min(s + length, end);
+    if (from >= to) continue;
+    const point = (station, side, outer) => {
+      const r = (station - s) / length, t = (station - p.s) / (end - p.s);
+      const offset = side * mix(outer ? .31 : .24, outer ? .05 : 0, r);
+      return lerp3(roadPoint(p, offset * p.width, .05), roadPoint(q, offset * q.width, .05), t);
+    };
+    mesh.quad(point(from, -1, true), point(to, -1, true), point(to, -1, false), point(from, -1, false), color, 4);
+    mesh.quad(point(from, 1, false), point(to, 1, false), point(to, 1, true), point(from, 1, true), color, 4);
+  }
+}
+
+function makeTrack(track, loop) {
   const mesh = new Builder(), { points } = track, count = points.length;
   for (let i = 0; i < count; i++) {
     const p = points[i], q = points[(i + 1) % count], w = p.width / 2, qw = q.width / 2;
     if (!p.road || !q.road) continue;
+    const end = i + 1 === count ? track.length : q.s;
+    const tint = loopEdgeTint(loop, (p.s + end) / 2);
     mesh.triangle(roadPoint(p, -w), roadPoint(q, -qw), roadPoint(p, w), [0.13, 0.145, 0.145], 1);
     mesh.triangle(roadPoint(p, w), roadPoint(q, -qw), roadPoint(q, qw), [0.13, 0.145, 0.145], 1);
     for (const side of [-1, 1]) {
       const l = w * side, r = qw * side;
-      const stripe = Math.floor(p.s / 4) % 2 ? colors.cream : colors.orange;
-      mesh.quad(roadPoint(p, l - side * 0.45, 0.025), roadPoint(q, r - side * 0.45, 0.025),
-        roadPoint(q, r, 0.025), roadPoint(p, l, 0.025), stripe);
-      mesh.quad(roadPoint(p, l), roadPoint(q, r), roadPoint(q, r, -0.75), roadPoint(p, l, -0.75), colors.rust);
+      const stripe = tint ?? (Math.floor(p.s / 4) % 2 ? colors.cream : colors.orange);
+      const edgeQuad = (a, b, c, d, color, material) => {
+        if (track.isSpatial && side < 0) mesh.quad(d, c, b, a, color, material);
+        else mesh.quad(a, b, c, d, color, material);
+      };
+      const stripeWidth = tint ? .56 : .45;
+      edgeQuad(roadPoint(p, l - side * stripeWidth, .025), roadPoint(q, r - side * stripeWidth, .025),
+        roadPoint(q, r, .025), roadPoint(p, l, .025), stripe, tint ? 4 : 0);
+      edgeQuad(roadPoint(p, l), roadPoint(q, r), roadPoint(q, r, -.75), roadPoint(p, l, -.75),
+        tint ? scale(tint, .68) : colors.rust);
       mesh.beam(roadPoint(p, l, -1.65), roadPoint(q, r, -1.65), 0.10, colors.steel, 2);
-      if (i % 5 === 0) {
-        const end = points[(i + 5) % count];
-        mesh.beam(roadPoint(p, l, -0.7), roadPoint(end, end.width / 2 * side, -1.65),
+      if (i % 5 === 0 && (!track.isSpatial || [2, 3, 4, 5].every(step => points[(i + step) % count].road))) {
+        const brace = points[(i + 5) % count];
+        mesh.beam(roadPoint(p, l, -0.7), roadPoint(brace, brace.width / 2 * side, -1.65),
           0.065, colors.rust, 2);
       }
     }
@@ -126,6 +149,7 @@ function makeTrack(track) {
       mesh.quad(roadPoint(p, -0.07, 0.029), roadPoint(q, -0.07, 0.029),
         roadPoint(q, 0.07, 0.029), roadPoint(p, 0.07, 0.029), [0.55, 0.54, 0.43]);
     }
+    if (tint) loopArrows(mesh, loop, p, q, end);
     if (!track.isSpatial && i % 18 === 0) {
       for (const side of [-1, 1]) {
         const top = roadPoint(p, w * side * 0.8, -1.1), foot = [top[0], 0.2, top[2]];
@@ -327,17 +351,20 @@ export class RaceScene {
 
   constructor(graphics, track, geometry = null) {
     this.graphics = graphics;
-    this.track = { ...track, points: track.points.map((p, i) => {
+    const { points } = track;
+    this.track = { ...track, points: points.map((p, i) => {
       const edge = track.edges?.[i];
-      const q = track.points[(i + 1) % track.points.length];
+      const previous = points[(i + points.length - 1) % points.length], next = points[(i + 1) % points.length];
+      const before = p.road && !previous.road ? p : previous, after = p.road && !next.road ? p : next;
       return { ...p, edge, up: track.isSpatial && edge
-        ? normalize(cross([q.x - p.x, q.y - p.y, q.z - p.z],
+        ? normalize(cross([after.x - before.x, after.y - before.y, after.z - before.z],
           [edge.right.x - edge.left.x, edge.right.y - edge.left.y, edge.right.z - edge.left.z])) : undefined };
     }) };
+    this.loop = prepareStuntLoop(this.track);
     const landscape = geometry ?? makeLandscape(this.track);
     this.land = graphics.mesh(landscape.land);
     this.props = graphics.mesh(landscape.props);
-    this.road = graphics.mesh(geometry ? geometry.road : makeTrack(this.track));
+    this.road = graphics.mesh(geometry ? geometry.road : makeTrack(this.track, this.loop));
     const scenery = geometry ? null : buildCourseScenery(new Builder(), this.track);
     this.courseScenery = scenery ? graphics.mesh(scenery) : null;
     this.playerBodies = Object.fromEntries(vehicleStyles.map(style => [style.id, graphics.mesh(makeVehicleGeometry(style.id))]));
@@ -434,10 +461,10 @@ export class RaceScene {
       fov = 63 * Math.PI / 180;
     } else {
       const distance = 7.8 + Math.min(Math.abs(car.speed) * 0.027, 1.5);
+      fov = (65 + Math.min(Math.abs(car.speed) * 0.11, 6)) * Math.PI / 180;
       if (spatial) {
-        const approach = /approach/i.test(state.stunt?.feature ?? '');
-        eye = add(add(position, scale(forward, -(distance + (approach ? 3 : 0)))), scale(vehicleUp, approach ? 4.5 : 3.1));
-        target = add(add(position, scale(forward, approach ? 35 : 4.7)), scale(vehicleUp, approach ? 12 : 0.65));
+        ({ eye, target, fov } = stuntChaseCamera(
+          this.loop, this.track.length, state.progress, position, forward, right, vehicleUp, distance, fov));
         up = vehicleUp;
       } else {
         this.cameraYaw = this.cameraYaw === undefined ? car.yaw : angleMix(this.cameraYaw, car.yaw, 1 - Math.exp(-dt * 5));
@@ -446,8 +473,6 @@ export class RaceScene {
         eye[1] = Math.max(2, eye[1]);
         target = add(add(position, scale(forward, 4.7)), [0, 0.65, 0]);
       }
-      fov = (65 + Math.min(Math.abs(car.speed) * 0.11, 6)) * Math.PI / 180;
-      if (spatial && /approach/i.test(state.stunt?.feature ?? '')) fov = 78 * Math.PI / 180;
     }
     if (this.previousMode !== activeMode || activeMode === 'cockpit') {
       this.cameraEye = eye;

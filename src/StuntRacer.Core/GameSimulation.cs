@@ -12,6 +12,8 @@ public sealed class GameSimulation : IGameSession
     private const double RideHeight = 1.0;
     private const double DroopHeight = 1.3;
     private const double RecoveryPenalty = 5;
+    private const double LateralLimit = 10.8;
+    private const double StreetGripHeadroom = 1.8;
     private static readonly double[] WheelRight = [-0.9, 0.9, -0.9, 0.9];
     private static readonly double[] WheelForward = [1.3, 1.3, -1.3, -1.3];
     private readonly FixedStepClock _clock = new();
@@ -181,7 +183,7 @@ public sealed class GameSimulation : IGameSession
         return true;
     }
 
-    internal void IntegrateVehicle(Racer racer, double dt, DriverInput _input)
+    internal void IntegrateVehicle(Racer racer, double dt, DriverInput _input, bool manualStreetHandling = false)
     {
         // Keep the shared contact integrator's operation order intact.
         ref var _car = ref racer.Car;
@@ -192,13 +194,23 @@ public sealed class GameSimulation : IGameSession
         var circuitHandling = _openSurface is null;
         var wasGrounded = _car.Grounded;
         var speed = Math.Sqrt(_car.Vx * _car.Vx + _car.Vz * _car.Vz);
-        _car.Steer += Math.Clamp(_input.Steer - _car.Steer, -3.2 * dt, 3.2 * dt);
+        var streetResponse = manualStreetHandling && wasGrounded ? StreetHandlingResponse(speed) : 0;
+        var steerSlew = 3.2 + 6.8 * streetResponse;
+        _car.Steer += Math.Clamp(_input.Steer - _car.Steer, -steerSlew * dt, steerSlew * dt);
         var oldForwardSpeed = _car.Vx * Math.Sin(_car.Yaw) + _car.Vz * Math.Cos(_car.Yaw);
         var maximumYawRate = MaximumYawRate(_car, speed, oldForwardSpeed, circuitHandling) * _steeringScale;
         var desiredYawRate = _car.Steer * Math.Clamp(oldForwardSpeed / 12, -1, 1) * maximumYawRate;
+        if (streetResponse > 0)
+        {
+            // Blend toward a turn the tires can follow, rather than just rotating the body faster.
+            var gripYawLimit = (LateralLimit + StreetGripHeadroom * streetResponse) / speed;
+            var streetYawRate = Math.Clamp(desiredYawRate * 1.24, -gripYawLimit, gripYawLimit);
+            desiredYawRate += (streetYawRate - desiredYawRate) * streetResponse;
+        }
         if (!wasGrounded)
             desiredYawRate *= 0.22;
-        _car.YawRate += (desiredYawRate - _car.YawRate) * (1 - Math.Exp(-(wasGrounded ? 7 : 1.2) * dt));
+        var yawResponse = wasGrounded ? 7 + 7 * streetResponse : 1.2;
+        _car.YawRate += (desiredYawRate - _car.YawRate) * (1 - Math.Exp(-yawResponse * dt));
         _car.Yaw = Angle(_car.Yaw + _car.YawRate * dt);
 
         var sin = Math.Sin(_car.Yaw);
@@ -256,7 +268,11 @@ public sealed class GameSimulation : IGameSession
         if (_car.Boosting)
             drive += 9.5 * boostFraction;
         drive *= fraction > 0 ? fraction : 0.06;
-        var lateralAcceleration = Math.Clamp(-sideSpeed * 8, -10.8, 10.8) * fraction;
+        // Keep straight-line contact unchanged; fade the extra grip as the turn settles.
+        var corneringResponse = streetResponse * Math.Clamp(Math.Abs(_car.YawRate) / 0.1, 0, 1);
+        var lateralGrip = 8 + 6 * corneringResponse;
+        var lateralLimit = LateralLimit + StreetGripHeadroom * corneringResponse;
+        var lateralAcceleration = Math.Clamp(-sideSpeed * lateralGrip, -lateralLimit, lateralLimit) * fraction;
         var rolling = fraction * 0.35 * Math.Clamp(forwardSpeed * 4, -1, 1);
         var drag = contacts > 0 ? 0.0045 : 0.0009;
         ax += sin * (drive - rolling) + cos * lateralAcceleration - drag * speed * _car.Vx;
@@ -306,6 +322,14 @@ public sealed class GameSimulation : IGameSession
         if (_groundSeconds > 1.0 || _unstableSeconds > 1.5 || _car.Damage >= 1 ||
             Math.Abs(_car.X) > 2_000 || Math.Abs(_car.Z) > 2_000)
             Recover(racer);
+    }
+
+    private static double StreetHandlingResponse(double speed)
+    {
+        // Ramp in above parking speed and fade back to normal steering for fast driving.
+        var moving = Math.Clamp((speed - 0.5) / 3.5, 0, 1);
+        var street = Math.Clamp((22 - speed) / 14, 0, 1);
+        return moving * moving * (3 - 2 * moving) * street * street * (3 - 2 * street);
     }
 
     private static double LowSpeedResponse(double speed)

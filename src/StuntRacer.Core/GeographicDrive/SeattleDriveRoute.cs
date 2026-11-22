@@ -52,9 +52,8 @@ internal sealed class SeattleDriveRoute
         return (best, error);
     }
 
-    public double SpeedLimit(double station)
+    public double SpeedLimit(double station, double cruise)
     {
-        const double cruise = 13;
         const double comfortBrake = 1.8;
         var remaining = Math.Max(0, Plan.Length - station - 0.8);
         var speed = Math.Min(cruise, Math.Sqrt(2 * comfortBrake * remaining));
@@ -63,7 +62,7 @@ internal sealed class SeattleDriveRoute
             var distance = turn.Station - station;
             if (distance < -8) continue;
             if (distance > 60) break;
-            var cornerSpeed = Math.Clamp(10.6 - 3.9 * turn.Angle, 3.4, cruise);
+            var cornerSpeed = Math.Clamp(10.6 - 3.9 * turn.Angle, 3.4, 13);
             speed = Math.Min(speed, Math.Sqrt(cornerSpeed * cornerSpeed + 2 * comfortBrake * Math.Max(0, distance - 7)));
         }
         return speed;

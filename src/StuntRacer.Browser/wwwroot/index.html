@@ -44,6 +44,8 @@
         <button id="experience-hard" type="button" data-experience="hard-driving" disabled>HARD DRIVIN'<small>PROVING GROUND</small></button>
         <button id="experience-stunts" type="button" data-experience="stunts" disabled>STUNTS<small>LOOP PARK</small></button>
         <button id="experience-flight" type="button" data-experience="flight" disabled>FLIGHT<small>AMIGA / JET</small></button>
+        <button id="experience-block-rush" type="button" data-experience="arcade-yard" disabled>BLOCK RUSH<small>NEON YARD</small></button>
+        <button id="experience-air-tag" type="button" data-experience="flight-duel" disabled>AIR TAG DUEL<small>AMBERLINE RANGE</small></button>
       </nav>
       <label class="menu-mode" for="game-mode">GAME MODE
         <select id="game-mode" disabled>
@@ -64,6 +66,11 @@
           <option value="flight-training">FLIGHT TRAINING / DRONE &amp; BEACON</option>
           <option value="flight-original" disabled>FLIGHT / AMIGA ORIGINAL MODEL</option>
           <option value="flight-world" disabled>WORLD FLIGHT / UNITED STATES</option>
+          <option value="flight-atlas" disabled>WORLD FLIGHT ATLAS / GLOBAL</option>
+          <optgroup label="Fictional arcade">
+            <option value="arcade-yard">BLOCK RUSH / NEON YARD</option>
+            <option value="flight-duel">AIR TAG DUEL / AMBERLINE RANGE</option>
+          </optgroup>
         </select>
       </label>
       <button id="start-button" class="primary" type="button" disabled>
@@ -73,10 +80,20 @@
       <p id="seattle-availability" class="seattle-availability" hidden></p>
       <button id="air-start-button" class="secondary flight-only non-training-flight" type="button">AIR START / SKIP THE RUNWAY</button>
       <button id="world-flight-button" class="secondary" type="button" disabled>WORLD FLIGHT / SEATTLE &amp; U.S.</button>
-      <div class="world-flight-only world-brief-selects">
-        <label class="menu-mode" for="world-departure-menu">DEPARTURE<select id="world-departure-menu" disabled></select></label>
+      <button id="world-atlas-button" class="secondary" type="button" disabled>WORLD FLIGHT ATLAS / GLOBAL</button>
+      <div class="geographic-flight-only world-brief-selects">
+        <label class="menu-mode world-flight-only" for="world-departure-menu">DEPARTURE<select id="world-departure-menu" disabled></select></label>
+        <label class="menu-mode atlas-only" for="atlas-departure">DEPARTURE<select id="atlas-departure" disabled></select></label>
         <label class="menu-mode" for="world-aircraft-menu">AIRCRAFT<select id="world-aircraft-menu" disabled></select></label>
       </div>
+      <form id="atlas-coordinates" class="atlas-only" aria-label="Set a World Flight Atlas departure">
+        <label class="menu-mode" for="atlas-lon">LONGITUDE °<input id="atlas-lon" type="number" min="-180" max="180" step="any" required disabled></label>
+        <label class="menu-mode" for="atlas-lat">LATITUDE °<input id="atlas-lat" type="number" min="-90" max="90" step="any" required disabled></label>
+        <label class="menu-mode" for="atlas-heading">HEADING
+          <select id="atlas-heading" disabled><option value="90">East</option><option value="270">West</option><option value="0">North</option><option value="180">South</option></select>
+        </label>
+        <button id="atlas-start" class="secondary" type="submit" disabled>SET DEPARTURE</button>
+      </form>
       <div class="quick-controls keyboard-hints racing-only"><kbd>W A S D</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>BOOST</span></div>
       <div class="quick-controls keyboard-hints flight-only"><kbd>&larr; / &rarr;</kbd><span>AILERONS</span><kbd>+ / -</kbd><span>SET THROTTLE</span></div>
       <div class="quick-controls touch-hints racing-only"><span>TWO THUMBS: STEER LEFT / HOLD GAS RIGHT<br>SLIDE UP ON GAS FOR TURBO</span></div>
@@ -104,7 +121,7 @@
       </div>
       <div class="minimap">
         <svg id="map" viewBox="0 0 160 160" aria-label="Track map">
-          <path id="map-water" class="world-flight-only" fill="#236e7c" opacity=".8"/>
+          <path id="map-water" class="geographic-flight-only" fill="#236e7c" opacity=".8"/>
           <path id="map-outline" fill="none" stroke="#14201e" stroke-width="8" stroke-linejoin="round"/>
           <path id="map-road" fill="none" stroke="#d4d7c7" stroke-width="2.5" stroke-linejoin="round"/>
           <path id="map-drive-route" fill="none" stroke="#96ffce" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -120,7 +137,19 @@
           <select id="seattle-destination" disabled></select>
           <button id="seattle-autopilot" type="button" aria-label="Toggle in-game autopilot" aria-pressed="false" disabled>AUTOPILOT</button>
         </div>
+        <div class="seattle-cruise">
+          <label for="seattle-cruise-speed" class="eyebrow">AUTOPILOT SPEED</label>
+          <select id="seattle-cruise-speed" disabled>
+            <option value="slow">Slow</option>
+            <option value="normal" selected>Normal</option>
+            <option value="fast">Fast</option>
+          </select>
+        </div>
         <p id="seattle-gps-status" role="status"></p>
+        <div id="seattle-guidance" class="seattle-guidance" hidden>
+          <span id="seattle-route-arrow" class="route-arrow" aria-hidden="true">&#8593;</span>
+          <span id="seattle-route-distance"></span>
+        </div>
       </section>
       <div class="telemetry">
         <div class="meter-label"><span id="boost-label">TURBO RESERVE</span><strong id="boost-value">100%</strong></div>
@@ -138,6 +167,8 @@
       <div id="race-event" class="race-event" role="status"></div>
       <div id="training-dashboard" class="training-dashboard" aria-label="Training scanner" hidden>
         <strong id="training-score"></strong>
+        <span id="training-clock" role="timer" hidden></span>
+        <span id="duel-rival" hidden></span>
         <span id="training-range"></span>
         <span id="training-status" role="status"></span>
       </div>
@@ -162,7 +193,7 @@
         </svg>
         <div id="flight-nav" class="flight-nav">BAY RUNWAY</div>
         <div class="flight-configuration"><span id="flight-config">GEAR DOWN</span><span id="flight-load">1.0 G</span><span id="cockpit-mach"></span></div>
-        <p id="world-stream-status" class="world-flight-only"></p>
+        <p id="world-stream-status" class="geographic-flight-only"></p>
       </div>
       <div id="ghost-status" class="ghost-status" role="status" hidden></div>
       <div id="countdown" class="countdown" aria-live="polite"></div>
@@ -174,7 +205,7 @@
       <button id="flight-view-reset" type="button" data-view="forward" aria-keyshortcuts="5" title="Center the flight view (5 or 8)">CENTER VIEW</button>
       <button id="flight-look-rear" type="button" class="touch-glance" data-view="rear" aria-label="Look aft" title="Look aft (2)">AFT</button>
       <button id="flight-look-right" type="button" class="touch-glance" data-view="right" aria-label="Look right" title="Look right (6)">&#8594;</button>
-      <div id="world-scenery-controls" class="world-flight-only" role="group" aria-label="World Flight scenery">
+      <div id="world-scenery-controls" class="geographic-flight-only" role="group" aria-label="Geographic flight scenery">
         <button id="world-label-button" type="button" aria-label="Show landmark names" aria-pressed="false" title="Show names above visible landmarks">LABELS</button>
         <button id="world-road-button" type="button" aria-label="Use map-style road tint" aria-pressed="false" title="Tint mapped roads without changing coverage" hidden>MAP ROADS</button>
       </div>
@@ -192,6 +223,7 @@
     <section id="finish-panel" class="modal-panel" aria-labelledby="finish-title" hidden>
       <span id="finish-eyebrow" class="eyebrow">THREE LAPS. NICELY DONE.</span>
       <h2 id="finish-title">RUN COMPLETE.</h2>
+      <p id="finish-detail" hidden></p>
       <div class="finish-times"><span><span id="finish-time-label">TOTAL TIME</span><strong id="finish-time"></strong></span><span><span id="finish-best-label">BEST LAP</span><strong id="finish-best"></strong></span></div>
       <button id="again-button" type="button" class="primary">ONE MORE RUN <span aria-hidden="true">&#8599;</span></button>
       <button id="garage-finish" type="button" class="secondary">GARAGE / CHOOSE MODE</button>
@@ -225,13 +257,19 @@
     </div>
     <div id="toast" class="toast" role="status" hidden></div>
     <div id="stats" class="stats" hidden></div>
-    <footer class="footer"><span id="track-mode">INSPIRED BY THE AMIGA ORIGINAL / AUTHORED PLAYABLE PROTOTYPE</span><span class="geographic-credit world-credit">Elevation: USGS 3DEP / NOAA NCEI · Coast: Natural Earth · Buildings &amp; Seattle roads: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></span><span id="device-label"><i class="device-dot"></i> KEYBOARD READY</span></footer>
+    <footer class="footer"><span id="track-mode">INSPIRED BY THE AMIGA ORIGINAL / AUTHORED PLAYABLE PROTOTYPE</span><span class="geographic-credit world-credit">Elevation: USGS 3DEP / NOAA NCEI · Coast: Natural Earth · Buildings &amp; Seattle roads: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></span><span id="atlas-credits" class="atlas-only world-credit"></span><span id="device-label"><i class="device-dot"></i> KEYBOARD READY</span></footer>
   </main>
 
   <dialog id="help-dialog">
     <div class="dialog-top"><span class="eyebrow">THE DRIVER'S BRIEFING</span><button id="close-help" aria-label="Close controls">X</button></div>
     <h2>GET A GRIP.</h2>
-    <p class="racing-only">Keep all four tyres on the ribbon. Brake before a bend, then get back on the power. Use turbo on the straights and carry speed over the crests.</p>
+    <p class="racing-only non-arcade-yard">Keep all four tyres on the ribbon. Brake before a bend, then get back on the power. Use turbo on the straights and carry speed over the crests.</p>
+    <div class="arcade-yard-only activity-brief">
+      <h3>BLOCK RUSH / NEON YARD</h3>
+      <p>Drive through foam cubes to score. Follow the painted lanes and steer onto either branch to reach the goal
+        before time is up. Use <kbd>W</kbd> to drive and <kbd>A</kbd>/<kbd>D</kbd> to steer, or use the touch pedals or a controller.
+        Pause freezes the clock; Garage or Restart gives you a fresh set of cubes.</p>
+    </div>
     <div class="control-columns racing-only">
       <div><h3>KEYBOARD</h3><dl><dt>Accelerate / brake</dt><dd><kbd>W / S</kbd> or <kbd>&uarr; / &darr;</kbd></dd><dt>Steer</dt><dd><kbd>A / D</kbd> or <kbd>&larr; / &rarr;</kbd></dd><dt>Turbo</dt><dd><kbd>SPACE</kbd> or <kbd>SHIFT</kbd></dd><dt>Recover / pause</dt><dd><kbd>R</kbd> / <kbd>P</kbd></dd><dt>Camera / sound</dt><dd><kbd>C</kbd> / <kbd>M</kbd></dd><dt>Fullscreen / stats</dt><dd><kbd>F</kbd> / <kbd>F3</kbd></dd></dl></div>
       <div><h3>CONTROLLER</h3><dl><dt>Accelerate / brake</dt><dd>RT / LT</dd><dt>Steer</dt><dd>Left stick or D-pad</dd><dt>Turbo</dt><dd>A / Cross or RB</dd><dt>Recover</dt><dd>B / Circle</dd><dt>Camera / pause</dt><dd>Y / Triangle / Start</dd></dl><p class="small">Connect a controller and press a button. For USB joystick adapters, select the classic layout below.</p></div>
@@ -277,6 +315,13 @@
           or click the right stick. Scans are proximity-only; keep flying and wait for the scanner to recharge.
           Tag both once to clear the range. Garage or Restart starts a fresh attempt.</p>
       </div>
+      <div class="duel-flight-only">
+        <h3>AIR TAG DUEL / AMBERLINE RANGE</h3>
+        <p>Launch airborne and keep level for the first pass. Follow the bright Kite glider; the scoreboard shows its
+          distance and direction. When it says <strong>SCAN now</strong>, press <kbd>T</kbd>, click or tap <strong>SCAN</strong>,
+          or click the right stick. Tag on three separate close passes before time is up. Scans only record a point.
+          If you fly below the practice floor, the round ends early. Pause freezes both aircraft and the clock.</p>
+      </div>
       <div class="world-flight-only">
         <h3>WORLD FLIGHT / SELECT A DEPARTURE</h3>
         <select id="world-departure" aria-label="World Flight departure" disabled></select>
@@ -294,13 +339,18 @@
           Buildings &amp; Seattle roads: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors, ODbL</a>.
           Unmeasured heights are estimated. Iconic landmark models are authored for the game.</p>
       </div>
+      <div class="atlas-only">
+        <h3>WORLD FLIGHT ATLAS</h3>
+        <p class="small">In the Garage, choose a preset or enter signed longitude (west is negative), latitude (south is negative) and a heading. Set the departure, then start flight.</p>
+        <p class="small">The whole globe uses measured elevation and water data. Optional regional detail loads as you fly. Airport labels are landmarks, not modeled runways. For play, not navigation.</p>
+      </div>
     </div>
     <div class="preferences">
       <label>CONTROLLER LAYOUT<select id="controller-layout"><option value="standard">Standard gamepad</option><option value="joystick">Classic joystick (up/down + fire)</option></select></label>
       <label class="racing-only">VEHICLE BODY / SHARED DRIVING PHYSICS<select id="vehicle-style"></select></label>
       <label>GRAPHICS<select id="graphics-quality"><option value="high">High fidelity</option><option value="balanced">Balanced / lower GPU load</option></select></label>
       <label>PHYSICS MODEL<select id="physics-mode" disabled><option value="modern">Modern / responsive (default)</option><option id="classic-option" value="classic" disabled>Classic / Amiga-derived reference</option><option id="flight-original-option" value="flight-original" hidden disabled>Amiga F/A-18 / verified disk data</option></select></label>
-      <label>GAME MODE<select id="session-mode" disabled><option value="time-attack">Time attack / best lap</option><option value="race">Head-to-head / AI rival</option><option value="checkpoint-run">Checkpoint run / timed gates</option><option value="free-roam">City Cruise / open-world driving</option><option value="city-blitz">City Blitz / checkpoint rush</option><option value="city-circuit">City Circuit / street race</option><option value="seattle-drive" disabled>Seattle Scenic Drive / offline GPS</option><option value="hard-driving">Hard Drivin' / proving ground</option><option value="stunts">Stunts / loop &amp; jump park</option><option value="flight">Flight / modern jet</option><option value="flight-training">Flight Training / drone &amp; beacon</option><option value="flight-original" disabled>Flight / Amiga original model</option><option value="flight-world" disabled>World Flight / United States</option></select></label>
+      <label>GAME MODE<select id="session-mode" disabled><option value="time-attack">Time attack / best lap</option><option value="race">Head-to-head / AI rival</option><option value="checkpoint-run">Checkpoint run / timed gates</option><option value="free-roam">City Cruise / open-world driving</option><option value="city-blitz">City Blitz / checkpoint rush</option><option value="city-circuit">City Circuit / street race</option><option value="seattle-drive" disabled>Seattle Scenic Drive / offline GPS</option><option value="hard-driving">Hard Drivin' / proving ground</option><option value="stunts">Stunts / loop &amp; jump park</option><option value="arcade-yard">Block Rush / Neon Yard</option><option value="flight">Flight / modern jet</option><option value="flight-training">Flight Training / drone &amp; beacon</option><option value="flight-duel">Air Tag Duel / Amberline Range</option><option value="flight-original" disabled>Flight / Amiga original model</option><option value="flight-world" disabled>World Flight / United States</option><option value="flight-atlas" disabled>World Flight Atlas / Global</option></select></label>
       <label>ON-SCREEN TOUCH CONTROLS<select id="touch-mode"><option value="auto">Auto / detect touchscreen</option><option value="on">On / phone or tablet controls</option><option value="off">Off / keyboard or controller</option></select></label>
       <label>TRACK<select id="session-track" disabled></select></label>
       <label>BEST-LAP GHOST / TIME ATTACK<select id="ghost-mode" disabled><option value="on">On / record and replay clean best lap</option><option value="off">Off / hide ghost</option></select></label>

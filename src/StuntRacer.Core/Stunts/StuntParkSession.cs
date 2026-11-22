@@ -16,6 +16,7 @@ namespace StuntRacer.Core.Stunts;
 /// </remarks>
 public sealed class StuntParkSession : IGameSession
 {
+    private readonly StuntCourseOption _option;
     private readonly StuntParkCourse.Course _course;
     private readonly bool _hardDriving;
     private readonly StuntSurface _surface;
@@ -40,24 +41,33 @@ public sealed class StuntParkSession : IGameSession
     private int _score, _loops, _jumps, _landings, _gate, _recoveries, _bestScore;
     private long _runTicks;
 
-    public StuntParkSession() : this(StuntParkCourse.Build(), false)
+    public StuntParkSession() : this(StuntCourseCatalog.Skyline)
     {
     }
 
-    private StuntParkSession(StuntParkCourse.Course course, bool hardDriving)
+    private StuntParkSession(StuntCourseCatalog.Definition definition)
     {
-        _course = course;
-        _hardDriving = hardDriving;
-        _trial = hardDriving ? new(course) : null;
+        _option = definition.Option;
+        _course = definition.Build();
+        _hardDriving = _option.Mode == "hard-driving";
+        _trial = _hardDriving ? new(_course) : null;
+        Features = new(_option.Id, _option.Mode, _course.LoopStart, _course.LoopEnd,
+            _course.RampEnd, _course.LandingStart);
         _surface = new(_course.Track);
         Place(0);
-        if (hardDriving)
+        if (!_option.IsDefault)
+            _message = _option.Description;
+        else if (_hardDriving)
             _message = "Hard Drivin' — beat the checkpoint clock through the loop and flyover";
     }
 
     /// <summary>A distinct authored timed proving ground, not the original Atari engine or track data.</summary>
-    public static StuntParkSession CreateHardDriving() => new(HardDrivingSpatialCourse.Build(), true);
+    public static StuntParkSession CreateHardDriving() => new(StuntCourseCatalog.ProvingGround);
 
+    public static IReadOnlyList<StuntCourseOption> CourseCatalog => StuntCourseCatalog.Options;
+    public static StuntParkSession CreateCourse(string id) => new(StuntCourseCatalog.Get(id));
+
+    public StuntCourseFeatures Features { get; }
     public TrackDefinition Track => _course.Track;
     public GameSnapshot Snapshot => CreateSnapshot(1);
 
@@ -66,12 +76,14 @@ public sealed class StuntParkSession : IGameSession
         get
         {
             var next = _course.Gates[Math.Min(_gate, _course.Gates.Length - 1)];
-            return new(_hardDriving ? "hard-driving" : "stunts", _score, _loops, _jumps, _landings, _totalAirTime, _airTime,
-                _onRoad ? _course.FeatureAt(_s) : _onFloor ? "Off-road — recover"
+            var feature = _onRoad ? _course.FeatureAt(_s) : default;
+            return new(_option.Mode, _score, _loops, _jumps, _landings, _totalAirTime, _airTime,
+                _onRoad ? feature.Name : _onFloor ? "Off-road — recover"
                     : _jumpInFlight ? "Gap flight" : $"Falling — {_airOrigin}",
                 _lastStunt, _gate, _course.Gates.Length,
                 _gate == _course.Gates.Length ? "Complete" : next.Name, next.S / Track.Length,
-                _success, _cleanRun, _bestTime, _bestScore, _recordedBest, _normalLoad / 9.81);
+                _success, _cleanRun, _bestTime, _bestScore, _recordedBest, _normalLoad / 9.81,
+                _onRoad ? feature.Hint : null);
         }
     }
 
@@ -366,7 +378,7 @@ public sealed class StuntParkSession : IGameSession
         _boosting = false;
         _fl = _fr = _rl = _rr = 0;
         _airTime = 0;
-        _airOrigin = _course.FeatureAt(_s);
+        _airOrigin = _course.FeatureAt(_s).Name;
         _jumpInFlight = _s >= _course.RampEnd - 6 && _s < _course.LandingStart &&
             Dot(_velocity, _forward) > 8;
         _jumpCounted = false;
@@ -514,6 +526,7 @@ public sealed class StuntParkSession : IGameSession
         _ghost.ResetCurrent();
         Place(0);
         Say(!countdown ? "Garage — ready; recorded best retained"
+            : !_option.IsDefault ? $"Get ready — {_option.Name}; drive the loop, jump and ordered gates"
             : _hardDriving ? "Get ready — timed loop / flyover / ramp proving ground"
             : "Get ready — loop → banked bend → bridge → clean gap → finish", 3);
     }
@@ -545,7 +558,13 @@ public sealed class StuntParkSession : IGameSession
         _previous = Pose();
     }
 
-    private string Hint() => _hardDriving ? HardDrivingHint() : _course.FeatureAt(_s) switch
+    private string Hint()
+    {
+        var feature = _course.FeatureAt(_s);
+        return feature.Hint ?? (_hardDriving ? HardDrivingHint(feature.Name) : StuntsHint(feature.Name));
+    }
+
+    private static string StuntsHint(string feature) => feature switch
     {
         "Loop approach" => "LOOP AHEAD — build 35–40 m/s; keep straight; boost is optional",
         "Vertical loop" => "VERTICAL LOOP — hold the line; contact needs speed",
@@ -558,7 +577,7 @@ public sealed class StuntParkSession : IGameSession
         _ => "FINISH — loop + clean gap + all route gates"
     };
 
-    private string HardDrivingHint() => _course.FeatureAt(_s) switch
+    private static string HardDrivingHint(string feature) => feature switch
     {
         "Speed runway" => "SPEED RUNWAY — build 38–42 m/s for the full loop; checkpoint clock is live",
         "Proving-ground loop" => "PROVING LOOP — real 360° contact; keep speed and hold your line",

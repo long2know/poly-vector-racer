@@ -13,6 +13,7 @@ public sealed class SeattleDrivingSession : IGameSession
     private string _phase = "ready";
     private string _status = "manual";
     private string _message = "";
+    private string _cruiseSpeed = "normal";
     private DriverInput _input;
     private DriveDestination? _destination;
     private SeattleDriveRoute? _route;
@@ -40,7 +41,7 @@ public sealed class SeattleDrivingSession : IGameSession
     public DriveActivity Activity => new(_status,
         _terrainWaiting ? "Waiting for required Seattle street terrain." : _message, _auto,
         _destination?.Id, _revision, _route is null ? null : _status == "arrived" ? 0 : _route.Plan.Length - _station,
-        _distance, _route is null || _status == "arrived" ? null : _route.At(_station + 35), _terrainWaiting);
+        _distance, _route is null || _status == "arrived" ? null : _route.At(_station + 35), _terrainWaiting, _cruiseSpeed);
 
     private DrivePoint Position => new(_player.Car.X, _player.Car.Z);
     private double Elapsed => _clock.Tick * _clock.StepSeconds;
@@ -99,6 +100,11 @@ public sealed class SeattleDrivingSession : IGameSession
             case "autopilot-off":
                 if (_auto) StopAuto("guidance", "Manual control — GPS guidance remains on.");
                 break;
+            case "autopilot-speed:slow":
+            case "autopilot-speed:normal":
+            case "autopilot-speed:fast":
+                _cruiseSpeed = name["autopilot-speed:".Length..];
+                break;
             case "start":
                 if (_phase == "ready") Reset(true);
                 break;
@@ -138,9 +144,11 @@ public sealed class SeattleDrivingSession : IGameSession
 
         _surface.Missing = false;
         _player.Previous = before;
-        _physics.IntegrateVehicle(_player, dt, _auto ? AutoInput() : _input);
-        var ground = _surface.At(_player.Car.X, _player.Car.Z);
-        if (_surface.Missing || ground is null)
+        _physics.IntegrateVehicle(_player, dt, _auto ? AutoInput() : _input, manualStreetHandling: !_auto);
+        var position = Position;
+        var outside = !SeattleDriveArea.Bounds.Contains(position);
+        var ground = outside ? null : _surface.At(position.X, position.Z);
+        if (_surface.Missing || (!outside && ground is null))
         {
             _player.Car = before;
             _terrainWaiting = true;
@@ -149,25 +157,37 @@ public sealed class SeattleDrivingSession : IGameSession
 
         _terrainWaiting = false;
         _player.Impact *= Math.Exp(-3.5 * dt);
-        var blocked = ground.Value.IsWater || !_streets.OnStreet(Position);
-        if (blocked || _parked)
+        var water = ground is { IsWater: true };
+        var onStreet = !outside && _streets.OnStreet(position);
+        var leftAutoStreet = _auto && !onStreet;
+        if (outside || water || leftAutoStreet || _parked)
         {
-            // A street boundary is a solid stop at the current position, never a path correction.
+            // A boundary is a solid stop at the current position, never a path correction.
             _player.Car.X = before.X;
             _player.Car.Z = before.Z;
             _player.Car.Vx = _player.Car.Vz = 0;
-            if (blocked)
-            {
-                if (_auto) StopAuto("boundary", "Autopilot stopped at the street boundary — take manual control.");
-                else if (_status != "boundary")
-                    SetStatus("boundary", "End of supported street — back up or recover to the start.");
-            }
+            if (outside)
+                StopAuto("boundary", "Seattle drive area boundary — back up or recover to the start.");
+            else if (water)
+                StopAuto("water", "Water ahead — back up or recover to the start.");
+            else if (leftAutoStreet)
+                StopAuto("boundary", "Autopilot stopped at the street boundary — take manual control.");
+            return true;
         }
 
-        var movement = Position.DistanceTo(new(before.X, before.Z));
+        var movement = position.DistanceTo(new(before.X, before.Z));
         _distance += movement;
-        if (!blocked && _status == "boundary" && movement > 0.001)
-            SetStatus(_route is null ? "manual" : "guidance", "Manual control — back on the supported streets.");
+        if (_status is "water" or "boundary" && movement <= 0.001)
+            return true;
+        if (!onStreet)
+        {
+            if (_status != "off-road") SuspendGuidance();
+            return true;
+        }
+        if (_status is "off-road" or "water" or "boundary")
+            SetStatus(_destination is null ? "manual" : "guidance", _destination is not null && _route is null
+                ? "Back on a mapped street — restoring GPS guidance."
+                : "Manual control — back on a mapped street.");
         UpdateNavigation(dt);
         return true;
     }
@@ -184,7 +204,8 @@ public sealed class SeattleDrivingSession : IGameSession
         var curvature = 2 * Math.Sin(error) / Math.Max(4.5, Position.DistanceTo(target));
         var yawAuthority = (1.35 * StreetSteeringScale / (1 + speed / 13)) / Math.Max(12, Math.Abs(forward));
         var steer = Math.Clamp(curvature / yawAuthority, -1, 1);
-        var desired = route.SpeedLimit(_station);
+        var cruise = _cruiseSpeed switch { "slow" => 9, "fast" => 16, _ => 13 };
+        var desired = route.SpeedLimit(_station, cruise);
         if (Math.Abs(error) > 0.42) desired = Math.Min(desired, 4.6);
         if (route.Plan.Length - _station < 5 && Position.DistanceTo(route.End) > 2.0)
             desired = Math.Max(Math.Abs(error) < 1.1 ? 1.0 : 0, desired);
@@ -194,7 +215,12 @@ public sealed class SeattleDrivingSession : IGameSession
 
     private void UpdateNavigation(double dt)
     {
-        if (_route is null || _status == "arrived") return;
+        if (_status == "arrived") return;
+        if (_route is null)
+        {
+            RefreshManualRoute();
+            return;
+        }
         var before = _station;
         var match = _route.Project(Position, before);
         _station = _auto ? Math.Max(before, match.Station) : match.Station;
@@ -214,21 +240,41 @@ public sealed class SeattleDrivingSession : IGameSession
             if (match.Error > 14 || _stillSeconds > 5)
                 StopAuto("guidance", "Autopilot lost the route — take manual control or re-engage from an aligned street.");
         }
-        else if (match.Error > 18 && Elapsed >= _nextReroute)
-        {
-            _nextReroute = Elapsed + 0.8;
-            Replan(false);
-        }
+        else if (match.Error > 18) RefreshManualRoute();
+    }
+
+    private void RefreshManualRoute()
+    {
+        if (_destination is null || Elapsed < _nextReroute) return;
+        _nextReroute = Elapsed + 0.8;
+        Replan(false);
+    }
+
+    private void SuspendGuidance()
+    {
+        if (_route is not null) ClearRoute();
+        StopAuto("off-road", _destination is null ? "Off-road — manual driving on dry ground."
+            : "Off-road — return to a mapped street to resume GPS.");
+    }
+
+    private void ClearRoute()
+    {
+        _route = null;
+        _station = 0;
+        _revision++;
     }
 
     private bool Replan(bool forward)
     {
         _stillSeconds = 0;
+        if (!_streets.OnStreet(Position))
+        {
+            SuspendGuidance();
+            return false;
+        }
         if (_destination is null)
         {
-            _route = null;
-            _station = 0;
-            _revision++;
+            ClearRoute();
             SetStatus("manual", "Choose a GPS destination or explore in manual control.");
             return false;
         }
@@ -240,9 +286,7 @@ public sealed class SeattleDrivingSession : IGameSession
                     "No forward autopilot route here — align with a highlighted street and try again.");
             else
             {
-                _route = null;
-                _station = 0;
-                _revision++;
+                ClearRoute();
                 SetStatus("unreachable", "No connected mapped street route from here — no guidance available.");
             }
             return false;

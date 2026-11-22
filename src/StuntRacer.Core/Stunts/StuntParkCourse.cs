@@ -71,19 +71,20 @@ public static class StuntParkCourse
     private static double Smooth(double t) => t * t * (3 - 2 * t);
 
     internal sealed record Course(TrackDefinition Track, Feature[] Features, Gate[] Gates,
-        double LoopStart, double LoopEnd, double RampEnd, double LandingStart, double LandingEnd)
+        double LoopStart, double LoopEnd, double RampEnd, double LandingStart, double LandingEnd,
+        double CheckpointSlack, double CheckpointPace)
     {
-        public string FeatureAt(double s)
+        public Feature FeatureAt(double s)
         {
             s = (s % Track.Length + Track.Length) % Track.Length;
             for (var i = Features.Length - 1; i >= 0; i--)
                 if (s >= Features[i].S - 1e-8)
-                    return Features[i].Name;
-            return Features[0].Name;
+                    return Features[i];
+            return Features[0];
         }
     }
 
-    internal readonly record struct Feature(string Name, double S);
+    internal readonly record struct Feature(string Name, double S, string? Hint);
     internal readonly record struct Gate(string Name, double S, double RecoveryS);
 
     internal sealed class Builder
@@ -94,6 +95,7 @@ public static class StuntParkCourse
         private readonly List<Gate> _gates = [];
         private StuntVector _last;
         public double Distance { get; private set; }
+        public StuntVector Center => _last;
 
         public void Add(StuntVector center, StuntVector right, double heading, double width, bool road = true)
         {
@@ -105,7 +107,7 @@ public static class StuntParkCourse
             _edges.Add(new((center - right * (width / 2)).Vertex, (center + right * (width / 2)).Vertex));
         }
 
-        public void Feature(string name) => _features.Add(new(name, Distance));
+        public void Feature(string name, string? hint = null) => _features.Add(new(name, Distance, hint));
         public void Gate(string name, double recoveryS) => _gates.Add(new(name, Distance, recoveryS));
 
         public void Samples(int count,
@@ -146,7 +148,8 @@ public static class StuntParkCourse
         }
 
         public Course Finish(double loopStart, double loopEnd, double rampEnd, double landingStart, double landingEnd,
-            string name = "Skyline Loop Park — authored Stunts-inspired challenge", double width = 11)
+            string name = "Skyline Loop Park — authored Stunts-inspired challenge", double width = 11,
+            double checkpointSlack = 4, double checkpointPace = 28)
         {
             // The final sample duplicates the start; the strip closes to row zero, not a zero-area row.
             _points.RemoveAt(_points.Count - 1);
@@ -155,7 +158,7 @@ public static class StuntParkCourse
             var track = TrackDefinition.FromSpatialGeometry(name, width, Distance,
                 _points.ToArray(), _edges.ToArray());
             return new(track, _features.ToArray(), _gates.ToArray(), loopStart, loopEnd,
-                rampEnd, landingStart, landingEnd);
+                rampEnd, landingStart, landingEnd, checkpointSlack, checkpointPace);
         }
     }
 }

@@ -30,15 +30,32 @@ sessions, not just alternate labels for Foundry Heights:
   checkpoint bonuses. **City Circuit** is a two-lap street race against a
   physical rival through the same traffic-filled city. These are
   Midtown Madness-inspired activities, not a Chicago map or imported game code.
-- **Hard Drivin' / Proving Ground** has a separate 2,230-metre spatial course:
-  a traversable 44-metre-high loop, four banked corners, an 8.4-metre precision
-  bridge and a real 22-metre ramp gap. Ten ordered checkpoints award clock
-  bonuses; the course supports real success and timeout.
-- **Stunts / Loop & Jump Park** is a separate spatial-contact session, with a
-  driveable vertical loop, banked turns, a precision bridge, a ramp and a real
-  sixteen-metre gap. Carry enough speed through the loop; insufficient contact
-  load or steering off an edge produces a real fall. Clean loop/jump/landing
-  events earn score, and clean completed circuits can record a best-run ghost.
+- **Hard Drivin'** opens the existing authored **Loop & Bridge Proving Ground**:
+  2,230 metres with a 44-metre loop, four banked corners, an 8.4-metre flyover,
+  a 22-metre gap and ten timed checkpoints. The alternate **Switchback Test
+  Track** puts a right-right-left turn sequence before its eastbound 24-metre
+  channel gap, then sends you across a narrow south timing bridge. Its nine gates
+  share a tighter clock: clear the loop and jump and pass every gate before time
+  runs out.
+- **Stunts** opens **Skyline Loop Park**: a vertical loop, banked turns, a
+  precision bridge and a 16-metre gap. On **Reservoir Run**, bank left along the
+  dam, jump the 18-metre spillway gap, then take the dogleg to the elevated
+  return bridge. Both courses require a full loop, clean gap landing and every
+  route gate. Lose tire contact or steer off an edge and the car can really fall.
+  Clean completed circuits can record a best-run ghost.
+- **Block Rush / Neon Yard** is a closed fictional course with original
+  glowing foam cubes and no traffic or people. Follow the painted lanes with
+  **W/A/S/D**, the touch pedals, or a controller. Pop cubes for points and
+  steer onto a branch to reach **1,000 points in 30 seconds**. Pause freezes the
+  round; **Restart** or **Garage** resets the cubes and clock.
+
+Find the alternates under **Stunts courses** and **Hard Drivin' courses** in
+**Choose track** or in **Controls → Track** while paused. Use **W** to accelerate,
+**S** to brake and **A/D** to steer. Keep straight and carry roughly **125–150 km/h**
+into the loop; **Space** gives optional boost. On the alternates, the HUD calls
+out bends and target speeds. Brake before the turns and straighten the car
+before the ramp. Restart and Garage keep the selected course; switching courses
+starts a fresh session with its own score, clock and recording.
 
 The original **Checkpoint Run** remains available on the racing circuits:
 pass the lime-green gates in order for time bonuses, finish before time expires,
@@ -113,14 +130,16 @@ uses the same optional World Flight ZIP, including its Seattle OpenStreetMap
 roads, scenery and detailed terrain. In the **Garage**, select **Seattle** and
 start the drive. Choose a stop in **Offline GPS** to show the street route on
 the minimap, or enable **Autopilot** to let the game car drive and stop there.
-Steering, accelerating, braking or boosting immediately returns control to you;
-the GPS stays available. Stops are street approaches to Seattle Great Wheel,
+Choose **Slow**, **Normal**, or **Fast** in **Autopilot Speed** without turning
+Autopilot off. Steering, accelerating, braking or boosting returns control to you.
+Stops are street approaches to Seattle Great Wheel,
 Space Needle, Amazon Spheres, Lumen Field and T-Mobile Park.
 
-Driving is limited to connected downtown surface streets. No bridges, freeways,
-live traffic or routing services are used. Fictional pedestrians walk on
-selected dry sidewalks in Seattle Scenic Drive and make room for the game
-car; they don't affect driving or GPS. Pausing also pauses the walkers.
+Manual driving can explore dry ground within the downtown map boundary.
+Offline GPS and Autopilot use only supported mapped surface streets; leave a
+street to explore manually, and return to one to use guidance again. No bridges,
+freeways, live traffic or routing services are used. Fictional sidewalk walkers
+are decorative and never collide with the car. Pausing also pauses the walkers.
 The offline map has no lane, one-way or turn-restriction rules; use it only
 in the game. A ZIP without Seattle roads leaves this experience unavailable
 but does not disable flight.
@@ -132,6 +151,15 @@ the moving practice drone and the ground beacon. Scan each in turn when the
 range dashboard shows it is close enough. Both are non-destructive proximity
 tags, and neither appears in World Flight, Interceptor Bay, or the Amiga world.
 Tag both to clear the range; **Garage** or **One More Run** resets the score.
+
+**Air Tag Duel / Amberline Range** is a separate, fictional Modern flight
+activity. Launch airborne and keep level for the first pass. Follow the bright
+Kite glider using its distance and direction in the scoreboard. When **SCAN**
+lights up, press **T**, click or tap **SCAN**, or click the controller's right
+stick. Score three separate close passes in **32 seconds**; staying close on a
+single pass cannot score twice. Tags are non-destructive and only add points.
+Pause freezes both aircraft and the clock. **Restart** or **Garage** resets the
+duel. The range and glider use original assets and need no external package.
 
 Optional **Classic/reference** mode now has an independently authored,
 Amiga-derived three-contact integer player runtime and an actual externally
@@ -197,9 +225,9 @@ engine response. Hold **BURN** or slide up from **PWR +** for afterburner at
 high power; release to stop it. Brakes, gear and recovery are separate touch
 buttons; original flight adds a hook button.
 
-In **Flight Training** only, press **T**, click or tap the **SCAN** button,
-or click the right stick. Scanning has a short recharge; pausing stops
-the drone and recharge and disables scans.
+In **Flight Training** and **Air Tag Duel** only, press **T**, click or tap
+**SCAN**, or click the right stick. Scanning has a short recharge; pausing
+freezes the moving props and recharge and disables scans.
 
 **C** switches between cockpit and chase; **V** toggles the chase overlay.
 Use the **number row or numpad** for snap views: **4/6** left/right, **2**
@@ -251,33 +279,38 @@ for an existing deployment. `/healthz` is always at the upstream root.
 `POLY_VECTOR_RACER_IMAGE` can select an immutable image digest or a
 `sha-<commit>` tag for repeatable deployment or rollback.
 
-No volume is needed for the base game. For **World Flight**, copy one
-[`world-flight.zip`](tools/WorldFlight/README.md#package-as-a-portable-zip)
-outside the web root. The host serves individual tiles directly from the ZIP;
-there is no extraction step or browser download of the whole archive. With
-the native host built:
+No volume is needed for the base game. `STUNT_WORLD_ATLAS` is the only
+geographic scenery setting. Point it at an absolute directory outside the web
+root. Put either or both datasets there:
+
+- **U.S. World Flight and Seattle Scenic Drive:** `seattle.zip` (exact lowercase
+  name). An existing extracted package can instead go at
+  `seattle/manifest.json`, with its sibling data files. A present ZIP takes
+  precedence; an invalid ZIP fails startup rather than using the extracted copy.
+- **World Flight Atlas:** `base.zip` for worldwide terrain, with any compatible
+  lowercase area ZIPs alongside it. `seattle.zip` does not change the Atlas
+  revision, and Seattle alone does not need `base.zip`.
+
+**Migration:** Stop passing `STUNT_WORLD_FLIGHT`. Copy or rename your existing
+[`world-flight.zip`](tools/WorldFlight/README.md#package-as-a-portable-zip) to
+`seattle.zip` in the new directory; don't unpack or rebuild it. The manifest,
+asset bytes and `/world-flight/` URLs are unchanged. Move an extracted package
+under `seattle/` instead. Use the scenery-directory overlay below in place of
+either old World Flight Compose override.
 
 ```sh
-BASE_URL=/poly-vector-racer STUNT_WORLD_FLIGHT=/absolute/path/world-flight.zip bash scripts/run.sh
+BASE_URL=/poly-vector-racer STUNT_WORLD_ATLAS=/absolute/path/scenery bash scripts/run.sh
 ```
 
-With a ZIP-capable container image, bind-mount just that file read-only. It
-must be readable by the container's UID/GID `1000:1000`.
+For Docker, bind-mount the directory read-only using
+[`deploy/compose.world-atlas.yaml`](deploy/compose.world-atlas.yaml). It must be
+readable by the container's UID/GID `1000:1000`. The host serves individual
+entries; the browser never downloads the whole ZIP. Restart the host after
+changing the pack set.
 
 ```sh
-WORLD_FLIGHT_ZIP=/absolute/path/world-flight.zip \
-  docker compose -f compose.yaml -f deploy/compose.world-flight-zip.yaml up -d
-```
-
-Existing extracted packages still work. For a native host, set
-`STUNT_WORLD_FLIGHT` to the absolute `manifest.json` path. For Docker, use the
-directory overlay **instead of** the ZIP overlay: put the package under
-`${DOCKER_DATA}/games/poly-vector-racer/world-flight` or set `WORLD_FLIGHT_DIR`
-to its actual absolute directory.
-
-```sh
-DOCKER_DATA=/absolute/path/to/docker-data \
-  docker compose -f compose.yaml -f deploy/compose.world-flight.yaml up -d
+WORLD_ATLAS_DIR=/absolute/path/scenery \
+  docker compose -f compose.yaml -f deploy/compose.world-atlas.yaml up -d
 ```
 
 For the optional original/reference modes, [`deploy/compose.reference.yaml`](deploy/compose.reference.yaml)
@@ -572,6 +605,9 @@ checks; the default run includes them after the racing checks.
 `STUNT_BROWSER_FOCUS=flight-training` checks the native range through keyboard
 and phone input; `STUNT_BROWSER_FOCUS=world-flight-settings` checks the aircraft
 selector, landmark projection and road styling with the hosted terrain ZIP.
+`STUNT_BROWSER_FOCUS=arcade-activities` checks real WASM Air Tag Duel and
+Block Rush in Chrome, with keyboard, touch, and a virtual gamepad. It needs no
+external content.
 `STUNT_BROWSER_FOCUS=world-flight-speed` runs the focused SR-71 Mach 3 check
 at the Cascades departure without preceding mobile or sightseeing scenes.
 `STUNT_BROWSER_FOCUS=seattle-drive` checks the real ZIP's street map, scenery,
@@ -580,12 +616,17 @@ sidewalk activity, GPS arrival, pause, replanning and keyboard takeover in Chrom
 states. To run the deterministic native arrival and takeover checks:
 
 ```bash
-bash scripts/dotnet.sh run --project tests/StuntRacer.SeattleDriveChecks -c Release -- /absolute/path/world-flight.zip
+bash scripts/dotnet.sh run --project tests/StuntRacer.SeattleDriveChecks -c Release -- /absolute/path/scenery/seattle.zip
 ```
 
 `STUNT_BROWSER_FOCUS=experiences` exercises the visible experience buttons,
 city traffic/walkers, street races, proving-ground gates, a genuinely driven
 Stunts loop, the original bridge tour and city touch layouts.
+`STUNT_BROWSER_FOCUS=stunt-courses node tests/browser/playable.mjs` selects the
+two alternate courses in Chrome, drives their supported loops with keyboard
+input, and checks scoring, the timed gates, pause, Restart and Garage.
+`npm run test:stunts` drives both complete alternate circuits with native
+public inputs, including their open gaps, clean landings and all ordered gates.
 `STUNT_BROWSER_FOCUS=original-flight STUNT_REQUIRE_ORIGINAL_FLIGHT=1` requires
 the original runway/carrier/touch flow. Configure the external package or set
 `STUNT_ORIGINAL_ZIP` to a local disk ZIP to also exercise real browser ingestion
@@ -648,6 +689,6 @@ implementation, vehicle/environment art and synthesized sounds are newly
 authored. Reference layouts/tables, when configured, retain their separate
 provenance and distribution limits. Checkpoint trials and best-lap ghosts are
 independently authored inspired features, not imported Hard Drivin' or Stunts
-engines. The separate authored Stunts activity does include a physical loop and
-jump course; a Stunts editor and original replay-file compatibility are not
+engines. All four Stunts and Hard Drivin' courses have authored physical loops
+and jumps. A Stunts editor and original replay-file compatibility are not
 implemented. The Hard Drivin' ST source is not part of this implementation.

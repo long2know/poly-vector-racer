@@ -1,4 +1,5 @@
 import { cross, lerp3, normalize, sub, transform } from './engine/math.js';
+import { stuntCourseMode } from './stunt-approach.js';
 
 const stunts = {
   shell: [.105, .055, .235], signal: [.32, .91, .82], launch: [1, .285, .48], landing: [.43, 1, .54],
@@ -74,7 +75,7 @@ function blade(mesh, frame, side, colors, light, height, offset = .46) {
   mesh.box([x, height * .81, -.045], [.27, height * .31, .45], light, 4, frame);
 }
 
-function features({ points, length }) {
+function features({ points, length, course }) {
   const slope = i => (points[i + 1].y - points[i].y) / (points[i + 1].s - points[i].s);
   let loop = points.findIndex((p, i) => p.road && points[i + 1]?.road && slope(i) > .65);
   if (loop !== -1)
@@ -91,13 +92,17 @@ function features({ points, length }) {
   const takeoff = points.findIndex((p, i) => p.road && points[i + 1]?.road === false);
   const landing = takeoff < 0 ? -1 : points.findIndex((p, i) => i > takeoff && p.road);
   const gap = landing < 0 || points[landing].s >= length ? null : [points[takeoff].s, points[landing].s];
-  return { loop: points[loop]?.s, bridge, gap };
+  return {
+    loop: course?.loopStart ?? points[loop]?.s, bridge,
+    gap: Number.isFinite(course?.rampEnd) && Number.isFinite(course?.landingStart)
+      ? [course.rampEnd, course.landingStart] : gap,
+  };
 }
 
 export function buildCourseScenery(mesh, track) {
   if (!track.isSpatial || !track.points.every(p => p.edge)) return null;
-  const park = track.name === 'Skyline Loop Park — authored Stunts-inspired challenge';
-  const hard = track.name === "Hard Drivin' Loop & Bridge Proving Ground — authored timed challenge";
+  const mode = stuntCourseMode(track);
+  const park = mode === 'stunts', hard = mode === 'hard-driving';
   if (!park && !hard) return null;
   const colors = park ? stunts : proving, { loop, bridge, gap } = features(track);
   const sign = (s, side, symbol, w, h) => panel(mesh, frameAt(track, s, side), side, colors, symbol, [w, h]);

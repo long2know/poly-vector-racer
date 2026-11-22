@@ -24,6 +24,17 @@ public sealed record FlightSourceWorld(
     IReadOnlyList<FlightVector> MapOutline,
     IReadOnlyList<string> GeometryNotes);
 
+public sealed record WorldAtlasDeparture(string Id, string Name, double Lon, double Lat, double Heading = Math.PI / 2);
+public sealed record WorldAtlasDetails(string Name, WorldFlightDestination Destination,
+    double Lon, double Lat)
+{
+    public int WrapX => WorldAtlasGrid.Width;
+    public int MinX => -WorldAtlasGrid.HalfWidth;
+    public int MaxX => WorldAtlasGrid.HalfWidth;
+    public int MinZ => -WorldAtlasGrid.HalfHeight;
+    public int MaxZ => WorldAtlasGrid.HalfHeight;
+}
+
 /// <summary>The shared definition for native contacts and consumer-generated scenery.</summary>
 public sealed record FlightWorldDefinition(
     string Name,
@@ -40,6 +51,33 @@ public sealed record FlightWorldDefinition(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public WorldFlightDetail? Geography { get; init; }
+
+    [JsonIgnore]
+    public WorldAtlasElevation? AtlasElevation { get; private init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WorldAtlasDetails? Atlas { get; init; }
+
+    public static FlightWorldDefinition CreateAtlas(WorldAtlasDeparture departure, WorldAtlasElevation elevation)
+    {
+        ArgumentNullException.ThrowIfNull(departure);
+        ArgumentNullException.ThrowIfNull(elevation);
+        if (departure.Id is not { Length: > 0 and <= 64 } ||
+            departure.Name is not { Length: > 0 and <= 100 } ||
+            !double.IsFinite(departure.Heading) || Math.Abs(departure.Heading) > Math.Tau)
+            throw new ArgumentException("Invalid World Flight Atlas departure.", nameof(departure));
+        var (x, z) = WorldAtlasGrid.Project(departure.Lon, departure.Lat);
+        var ground = elevation.Sample(x, z).Height;
+        // The sparse global surface can understate individual high peaks by kilometres.
+        var mountainClearance = 2000 * Math.Clamp((ground - 2500) / 4000, 0, 1);
+        var altitude = Math.Max(850, ground + 1400 + mountainClearance);
+        var start = new WorldFlightDestination(departure.Id, departure.Name, x, z, altitude, departure.Heading, x, z);
+        return new($"World Flight Atlas / {departure.Name}", 0, [], [], new(x, altitude, z), departure.Heading, 2.4)
+        {
+            Atlas = new("World Flight Atlas", start, departure.Lon, departure.Lat),
+            AtlasElevation = elevation
+        };
+    }
 
     public static FlightWorldDefinition CreateGeographic(string name, WorldFlightDestination destination,
         LandingSurface? runway, WorldFlightElevation elevation)
@@ -113,6 +151,12 @@ public sealed record FlightWorldDefinition(
             throw new ArgumentOutOfRangeException(nameof(x));
         if (!double.IsFinite(z))
             throw new ArgumentOutOfRangeException(nameof(z));
+
+        if (AtlasElevation is not null)
+        {
+            var sample = AtlasElevation.Sample(x, z);
+            return new(sample.Height, sample.Water != 0, sample.Water != 0 ? "Water" : "Terrain", null);
+        }
 
         if (Elevation is not null)
         {

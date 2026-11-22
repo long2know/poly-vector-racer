@@ -28,7 +28,13 @@ internal static class Program
             ("Hard timeout / countdown and driving pause / frozen finish", HardTimeout),
             ("Hard chronological checkpoint bonus / late-gate rejection / recovery penalty", HardDeadlines),
             ("Hard 60 / 120 / 144 Hz timed physics independence", HardSchedules),
-            ("garage ready reset / recorded-best preservation / both spatial modes", Garage)
+            ("garage ready reset / recorded-best preservation / both spatial modes", Garage),
+            ("two spatial courses per mode / accurate canonical loop and gap stations", AlternateGeometry),
+            ("Reservoir Run: public-input loop, spillway jump, bridge and clean finish", () => AlternateCircuit("stunts-reservoir")),
+            ("Switchback Test Track: public-input loop, channel jump and timed gate finish", () => AlternateCircuit("hard-switchback")),
+            ("Block Rush public-input hits / bounded course / no recovery farming", ArcadeYardChecks.DriveAndRecover),
+            ("Block Rush left and right steering wins / continuous finishing pose", ArcadeYardChecks.WinBothBranches),
+            ("Block Rush paused clocks / exact timeout / clean restart", ArcadeYardChecks.Lifecycle)
         ];
         var failures = 0;
         var watch = Stopwatch.StartNew();
@@ -652,6 +658,165 @@ internal static class Program
         }
     }
 
+    private static void AlternateGeometry()
+    {
+        var catalog = StuntParkSession.CourseCatalog;
+        Require(catalog.Count == 4 && catalog.Select(c => c.Id).Distinct().Count() == 4 &&
+            catalog.GroupBy(c => c.Mode).All(group => group.Count() == 2 && group.Count(c => c.IsDefault) == 1),
+            "the catalog must provide two distinct courses and one default per mode");
+        Throws<ArgumentException>(() => StuntParkSession.CreateCourse("hard-driving"));
+
+        foreach (var stock in new[] { new StuntParkSession(), StuntParkSession.CreateHardDriving() })
+        {
+            var stockEntry = catalog.Single(c => c.Mode == stock.Challenge.Mode && c.IsDefault);
+            var same = StuntParkSession.CreateCourse(stockEntry.Id);
+            Require(same.Track.Length == stock.Track.Length && same.Track.Points.SequenceEqual(stock.Track.Points) &&
+                same.Track.Edges.SequenceEqual(stock.Track.Edges), "catalog changed legacy spatial geometry");
+        }
+
+        foreach (var entry in catalog.Where(c => !c.IsDefault))
+        {
+            var game = StuntParkSession.CreateCourse(entry.Id);
+            var track = game.Track;
+            var course = game.Features;
+            var hard = entry.Mode == "hard-driving";
+            Require(course.Id == entry.Id && course.Mode == entry.Mode && game.Challenge.Mode == entry.Mode &&
+                (game.Snapshot.Trial is not null) == hard && track.Name.StartsWith(entry.Name),
+                $"catalog selected the wrong geometry, name or mode for {entry.Id}");
+            Require(track.IsSpatial && course.LoopStart > 180 && course.LoopStart + 95 < course.LoopEnd &&
+                course.LoopEnd < course.RampEnd && course.RampEnd < course.LandingStart &&
+                course.LandingStart < track.Length, $"{entry.Id} has invalid spatial feature stations");
+            var entryPoint = track.Points.Single(p => p.S == course.LoopStart);
+            var exit = track.Points.Single(p => p.S == course.LoopEnd);
+            var lip = track.Points.Single(p => p.S == course.RampEnd);
+            var landing = track.Points.Single(p => p.S == course.LandingStart);
+            Require(entryPoint.Road && exit.Road && exit.Z - entryPoint.Z > 12 && lip.Road && landing.Road &&
+                track.Points.Any(p => !p.Road) &&
+                track.Points.All(p => p.Road == (p.S <= lip.S || p.S >= landing.S)),
+                $"{entry.Id} loop is not physically separated or gap metadata does not match the strip");
+            Near(landing.Y, lip.Y, 1e-10, $"{entry.Id} takeoff lip and landing elevation do not agree");
+            Near(landing.S - lip.S, hard ? 24 : 18, 1e-8, $"{entry.Id} authored gap length");
+            Require(hard ? landing.X > lip.X + 20 : landing.Z < lip.Z - 16,
+                $"{entry.Id} gap points along the wrong route leg");
+            var before = track.Points.Any(p => p.S < lip.S && p.Width < 9);
+            var after = track.Points.Any(p => p.S > landing.S && p.Width < 9 && p.Y > landing.Y + 2);
+            Require(!before && after && track.Points.Any(p => p.Bank > 0.3) && track.Points.Any(p => p.Bank < -0.3),
+                $"{entry.Id} must mix left/right banked turns and put the narrow elevated bridge after the gap");
+        }
+    }
+
+    private static void AlternateCircuit(string id)
+    {
+        var game = StuntParkSession.CreateCourse(id);
+        var hard = game.Features.Mode == "hard-driving";
+        var jumpSpeed = hard ? 33d : 29;
+        var driver = new ParkDriver(game.Track, jumpSpeed, feature => feature switch
+        {
+            "Dam bend" or "Dam straight" or "Spillway bend" or "Spillway return" or
+                "Dogleg right" or "Dogleg straight" or "Dogleg left" or "Home bend" => 21,
+            "Spillway approach" or "Channel runway" => jumpSpeed,
+            "Bridge climb" or "Bridge descent" or "Reservoir bridge" or "Timing bridge" => hard ? 27 : 21,
+            "Fast loop exit" or "Upper banking" or "East banking" or "South banking" or
+                "West banking" or "Home approach" or "Switchback approach" => 28,
+            "Switchback right" or "Channel approach" or "Channel bend" => 25,
+            "Landing runway" when hard => 29,
+            "South straight" or "Home sprint" => 35,
+            _ => null
+        });
+        game.Command("start");
+        Countdown(game);
+        var initialBudget = game.Snapshot.Trial?.TimeRemaining;
+        var bonuses = 0d;
+        var inverted = false;
+        var gapTicks = 0;
+        var gapDistance = 0d;
+        var passedGates = 0;
+        CarSnapshot? takeoff = null;
+        for (var i = 0; i < 14_400 && game.Snapshot.Phase == "racing"; i++)
+        {
+            var previous = game.Snapshot;
+            game.Advance(Step, driver.Input(game));
+            var snapshot = game.Snapshot;
+            var car = snapshot.Player;
+            var station = snapshot.Progress * game.Track.Length;
+            var stunt = game.Challenge;
+            Require(snapshot.Recoveries == 0 && Distance(previous.Player, car) < 1, $"fell or teleported: {State(game)}");
+            Require(stunt.DrivingCue?.Contains("m/s", StringComparison.Ordinal) != true,
+                "visible speed guidance must match the km/h HUD");
+            if (station > game.Features.LoopStart && station < game.Features.LoopEnd)
+            {
+                var up = Up(car);
+                var center = game.Track.AtDistance(station);
+                Require(car.Grounded && Math.Abs(car.Pitch - previous.Player.Pitch) < 0.1 &&
+                    Math.Abs(car.X - up.X - center.X) < 1e-7 && Math.Abs(car.Y - up.Y - center.Y) < 1e-7 &&
+                    Math.Abs(car.Z - up.Z - center.Z) < 1e-7, $"loop did not track actual supported spatial contact: {State(game)}");
+                inverted |= up.Y < -0.8 && stunt.NormalLoad > 0;
+            }
+            if (stunt.Feature == "Gap flight")
+            {
+                takeoff ??= previous.Player;
+                gapTicks++;
+                Require(!car.Grounded && car.Suspension.All(x => x == 0) &&
+                    Math.Abs(station - game.Features.RampEnd) < 0.6,
+                    $"gap flight is not unsupported motion from the authored lip: {State(game)}");
+                gapDistance = Distance(takeoff, car);
+            }
+            if (car.Grounded && !previous.Player.Grounded)
+                Require(station > game.Features.LandingStart + 2.5 && snapshot.Impact == 0,
+                    $"car did not land cleanly on the far runway: {State(game)}");
+            if (stunt.GatesPassed != passedGates)
+            {
+                Require(stunt.GatesPassed == passedGates + 1, $"skipped a route gate: {State(game)}");
+                passedGates++;
+                if (snapshot.Trial is { } trial)
+                {
+                    Require(trial.CheckpointsPassed == passedGates &&
+                        (trial.LastBonus > 0) == (passedGates < stunt.GateCount), "incorrect timed gate bonus");
+                    bonuses += trial.LastBonus;
+                }
+            }
+            if (snapshot.Trial is { } timer)
+                Near(timer.TimeRemaining, initialBudget!.Value + bonuses - snapshot.Time, 1e-9,
+                    "checkpoint clock is not tied to actual elapsed time and gate bonuses");
+        }
+
+        var finish = game.Snapshot;
+        var result = game.Challenge;
+        Require(finish.Phase == "finished" && result.Success == true && result.RecordedBest && result.CleanRun &&
+            inverted && result.LoopsCompleted == 1 && result.Jumps == 1 && result.CleanLandings == 1 &&
+            result.Score > 1_500 && passedGates == result.GateCount && result.GateCount >= 7 &&
+            gapTicks > 100 && gapDistance > game.Features.LandingStart - game.Features.RampEnd + 7 &&
+            finish.Time is > 45 and < 110,
+            $"course did not earn a full, genuine clean finish: {State(game)}");
+        if (hard)
+            Require(finish.Trial is { Success: true, TimeRemaining: > 0 and < 22 } timer &&
+                timer.CheckpointsPassed == timer.CheckpointCount, $"Switchback finish time did not challenge the gate clock: {State(game)}");
+        var finished = JsonSerializer.Serialize(new { Snapshot = finish, Challenge = result });
+        game.Advance(10, new(1, 1, 0, true));
+        Require(JsonSerializer.Serialize(new { game.Snapshot, game.Challenge }) == finished, "a completed route did not freeze");
+        Require(finish.Ghost is { SampleCount: > 1_000, Car: not null } &&
+            StuntParkSession.CreateCourse(id).Snapshot.Ghost!.Car is null,
+            "clean native recording was missing or leaked across sessions");
+        game.Command("garage");
+        Require(game.Snapshot.Phase == "ready" && game.Challenge.Score == 0 && game.Snapshot.Player.Speed == 0 &&
+            game.Features.Id == id && game.Snapshot.Ghost!.Duration == finish.Ghost!.Duration,
+            "garage did not reset only the active route while retaining its recording");
+        game.Command("restart");
+        Countdown(game);
+        Require(game.Snapshot.Time == 0 && game.Challenge.GatesPassed == 0 &&
+            game.Snapshot.Trial?.TimeRemaining == initialBudget, "restart reused the previous gate budget");
+        if (hard)
+        {
+            for (var i = 0; i < 100 && game.Snapshot.Phase == "racing"; i++)
+                game.Advance(0.25, Idle);
+            Require(game.Snapshot.Trial is { Success: false, CheckpointsPassed: 0, TimeRemaining: 0 },
+                "Switchback can wait out its first gate without losing");
+        }
+        Console.WriteLine($"  {id}: {game.Track.Length:F1}m / {finish.Time:F3}s / {result.Score} pts / " +
+            $"{passedGates} gates / {gapTicks * Step:F2}s flight" +
+            (hard ? $" / {finish.Trial!.TimeRemaining:F2}s left" : ""));
+    }
+
     private static StuntParkSession HardStarted()
     {
         var game = StuntParkSession.CreateHardDriving();
@@ -707,7 +872,7 @@ internal static class Program
 
     // Test driver supplies only ordinary player controls; the simulation has no steering,
     // target-speed, route-following or test-pose API.
-    private sealed class ParkDriver(TrackDefinition track, double jumpSpeed = 28)
+    private sealed class ParkDriver(TrackDefinition track, double jumpSpeed = 28, Func<string, double?>? courseSpeed = null)
     {
         private int _near;
         public DriverInput Input(StuntParkSession game)
@@ -744,7 +909,8 @@ internal static class Program
             var rate = 2 * Math.Max(8, car.Speed) * Math.Sin(error) / look;
             var steeringScale = 1.35 / (1 + Math.Abs(car.Speed) / 35) * Math.Clamp(car.Speed / 8, -1, 1);
             var steer = Math.Abs(steeringScale) < 0.05 ? 0 : Math.Clamp(rate / steeringScale, -1, 1);
-            var speed = game.Challenge.Feature switch
+            var feature = game.Challenge.Feature;
+            var speed = courseSpeed?.Invoke(feature) ?? (feature switch
             {
                 "Loop approach" => 38d,
                 "Vertical loop" => 42,
@@ -766,7 +932,7 @@ internal static class Program
                 "South straight" => 32,
                 "Home sprint" => 36,
                 _ => 28
-            };
+            });
             return new(steer, Math.Clamp((speed - car.Speed) * 0.65, 0, 1),
                 Math.Clamp((car.Speed - speed) * 0.5, 0, 1), false);
         }

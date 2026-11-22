@@ -1,4 +1,5 @@
 import { RaceScene } from './scene.js';
+import { SeattleCamera } from './world-drive-camera.js';
 import { SeattleWalkers } from './world-drive-walkers.js';
 import { WorldScenery } from './world-flight-scene.js';
 import { WorldTerrain } from './world-terrain.js';
@@ -39,24 +40,27 @@ export class WorldDriveScene extends RaceScene {
     this.world = world;
     this.terrain = terrain;
     this.scenery = new WorldScenery(graphics, terrain);
+    this.seattleCamera = new SeattleCamera(terrain, world.bounds);
     this.walkers = new SeattleWalkers(graphics, world, terrain, driveRoads.get(terrain) ?? []);
   }
 
   update(state, dt, mode, compatibility) {
-    if (state.tick < this.lastTick) {
+    const { x, z } = state.player;
+    if (state.tick < this.lastTick || (this.lastPosition &&
+        Math.hypot(x - this.lastPosition[0], z - this.lastPosition[1]) > 24)) {
       this.cameraYaw = undefined;
       this.previousMode = null;
+      this.seattleCamera.reset();
     }
     this.lastTick = state.tick;
+    this.lastPosition = [x, z];
     const frame = super.update(state, dt, mode, compatibility);
-    const eye = frame.camera.eye;
-    if (mode !== 'cockpit' || state.phase === 'ready') {
-      const height = this.terrain.sample(eye[0], eye[2]);
-      if (height !== null) eye[1] = Math.max(eye[1], height + 1.1);
-    }
-    const { x, z } = state.player;
     return this.scenery.decorate(frame, x, z, {
-      far: 25000, view: 'ground', appendGroundActors: frame => this.walkers.append(frame, state, this.scenery),
+      far: 25000, view: 'ground', appendGroundActors: frame => {
+        this.driveCamera = this.seattleCamera.update(frame.camera, state.player, dt, mode,
+          state.phase === 'ready', this.orbit, this.graphics.canvas, this.scenery.buildingVolumes);
+        this.walkers.append(frame, state, this.scenery);
+      },
     });
   }
 
@@ -79,7 +83,7 @@ export class WorldDriveScene extends RaceScene {
     return points.map(({ x, z }, i) => `${i === 0 ? 'M' : 'L'}${this.mapPoint(x, z).map(n => n.toFixed(2)).join(' ')}`).join('');
   }
 
-  diagnostics() { return { ...this.scenery.diagnostics(), pedestrians: this.walkers.diagnostics() }; }
+  diagnostics() { return { ...this.scenery.diagnostics(), camera: this.driveCamera, pedestrians: this.walkers.diagnostics() }; }
 
   dispose() {
     this.walkers.dispose();

@@ -19,16 +19,16 @@ public sealed record DriveDestination(string Id, string Name, string Approach, D
 public sealed record DrivePlan(int Revision, IReadOnlyList<DrivePoint> Points, double Length);
 public sealed record DriveActivity(
     string Status, string Message, bool Autopilot, string? DestinationId, int PlanRevision,
-    double? Remaining, double DrivenDistance, DrivePoint? Waypoint, bool TerrainWaiting);
+    double? Remaining, double DrivenDistance, DrivePoint? Waypoint, bool TerrainWaiting, string CruiseSpeed);
 
 public static class SeattleDriveArea
 {
     public const string Id = "seattle-drive";
     public const string Name = "Seattle Scenic Drive";
-    public const string Coverage = "Selected downtown surface streets only. No bridges, freeways, traffic, or turn restrictions.";
+    public const string Coverage = "Explore dry downtown terrain manually. GPS and Autopilot use connected surface streets only.";
     public static DriveBounds Bounds { get; } = new(-640, 6800, 1000, 10740);
-    public static DrivePoint Spawn { get; } = new(167.69, 8336.27);
-    public static double SpawnHeading { get; } = Spawn.HeadingTo(new(174.57, 8338.10));
+    public static DrivePoint Spawn { get; } = new(174.57, 8338.10);
+    public static double SpawnHeading { get; } = Spawn.HeadingTo(new(183.23, 8340.37));
 
     public static IReadOnlyList<DriveTile> Tiles { get; } = Array.AsReadOnly(
         (from x in Enumerable.Range(-1, 2)

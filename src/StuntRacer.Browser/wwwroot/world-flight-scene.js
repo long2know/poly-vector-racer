@@ -203,7 +203,7 @@ function landmarkGeometry({ kind, span }) {
   return mesh;
 }
 
-function buildingsGeometry(rows, terrain) {
+function buildingsGeometry(rows, terrain, volumes) {
   const mesh = new Builder();
   let count = 0;
   for (const row of rows) {
@@ -232,6 +232,7 @@ function buildingsGeometry(rows, terrain) {
       if (a[0] === b[0] && a[2] === b[2]) continue;
       mesh.quad([a[0], h - 5, a[2]], a, b, [b[0], h - 5, b[2]], color, 2);
     }
+    volumes?.push({ id, ring, bottom: h - 5, top: h + height });
     count++;
   }
   return { mesh, count };
@@ -266,7 +267,7 @@ export class WorldScenery {
     const far = options.far ?? (balanced ? 140000 : 238000);
     const now = performance.now();
     const tiles = this.terrain.draw(x, z, far, balanced, now, ground);
-    this.updateBuildings(x, z, now);
+    this.updateBuildings(x, z, now, ground);
     if (ground) options.appendGroundActors?.(frame);
     if (this.cityMesh) frame.draws.push({ mesh: this.cityMesh, shadow: false });
     frame.draws = frame.draws.map(draw => {
@@ -333,7 +334,7 @@ export class WorldScenery {
     return anchors;
   }
 
-  updateBuildings(x, z, now) {
+  updateBuildings(x, z, now, ground = false) {
     const city = this.terrain.region.cities?.find(p => Math.hypot(x - p.x, z - p.z) < 27500);
     if (city !== this.city) {
       this.buildingLoad?.abort();
@@ -343,6 +344,7 @@ export class WorldScenery {
       this.buildingRetryAt = 0;
       if (this.cityMesh) this.graphics.releaseMesh(this.cityMesh);
       this.cityMesh = null;
+      this.buildingVolumes = null;
       this.buildingCount = 0;
       this.city = city;
     }
@@ -366,11 +368,13 @@ export class WorldScenery {
     }
     if (this.buildingData && detailLevel >= 6 &&
         (!this.cityMesh || detailLevel > this.cityDetail)) {
-      const { mesh, count } = buildingsGeometry(this.buildingData, this.terrain);
+      const volumes = ground ? [] : null;
+      const { mesh, count } = buildingsGeometry(this.buildingData, this.terrain, volumes);
       if (this.cityMesh) this.graphics.releaseMesh(this.cityMesh);
       this.cityMesh = this.graphics.mesh(mesh, true);
       this.buildingCount = count;
       this.cityDetail = detailLevel;
+      this.buildingVolumes = volumes;
     }
   }
 
@@ -396,6 +400,7 @@ export class WorldScenery {
     this.terrain.dispose();
     if (this.cityMesh) this.graphics.releaseMesh(this.cityMesh);
     this.cityMesh = null;
+    this.buildingVolumes = null;
     for (const { mesh } of this.landmarks) this.graphics.releaseMesh(mesh);
     this.landmarks = [];
   }
