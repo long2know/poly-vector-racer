@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using StuntRacer.Core;
 using StuntRacer.Core.Arcade;
 using StuntRacer.Core.SourceRuntime;
@@ -20,6 +21,13 @@ public static partial class Browser
     private static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+    private static readonly JsonSerializerOptions AtlasCommandJson = new(Json)
+    {
+        AllowDuplicateProperties = false,
+        MaxDepth = 4,
+        RespectRequiredConstructorParameters = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     private static IGameSession Game = new GameSimulation();
     private static bool importedGeometry;
@@ -284,6 +292,36 @@ public static partial class Browser
         };
         return FlightState(session.Advance(seconds, input));
     }
+
+    [JSExport]
+    public static string AtlasFlightFrame(double seconds, double roll, double pitch, double yaw,
+        double throttle, bool afterburner, bool brake, bool assisted, bool manualIntent)
+    {
+        var session = RequireAtlasFlight();
+        var input = new FlightInput(roll, pitch, yaw, throttle, afterburner, brake) { Assisted = assisted };
+        return FlightState(session.AdvanceAtlas(seconds, input, manualIntent));
+    }
+
+    [JSExport]
+    public static void AtlasFlightCommand(string json)
+    {
+        var session = RequireAtlasFlight();
+        if (json is not { Length: > 0 and <= 1024 })
+            throw new ArgumentException("Atlas autopilot requires a short JSON command.", nameof(json));
+        AtlasAutopilotCommand? command;
+        try { command = JsonSerializer.Deserialize<AtlasAutopilotCommand>(json, AtlasCommandJson); }
+        catch (JsonException error)
+        {
+            throw new ArgumentException("Atlas autopilot command has invalid JSON fields.", nameof(json), error);
+        }
+        // The Atlas domain validates all numeric values and command semantics before applying them.
+        session.ConfigureAtlasAutopilot(command
+            ?? throw new ArgumentException("Atlas autopilot requires a JSON object.", nameof(json)));
+    }
+
+    private static FlightSimulation RequireAtlasFlight() =>
+        flight is FlightSimulation { World.Atlas: not null } atlas ? atlas
+            : throw new InvalidOperationException("Atlas autopilot is only available in World Flight Atlas.");
 
     [JSExport]
     public static void Command(string command)

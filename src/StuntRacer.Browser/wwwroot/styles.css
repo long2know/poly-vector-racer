@@ -405,6 +405,85 @@ body[data-touch="on"] #flight-view-controls button { min-height: 44px; }
   .world-brief-selects select { min-height: 35px; }
 }
 
+.atlas-ap {
+  --atlas-ap-top: 160px;
+  --atlas-ap-floor: 195px;
+  position: absolute; z-index: 1; top: var(--atlas-ap-top); left: 4%; width: min(270px, 24vw);
+  color: #e2eee3; font-size: 11px; line-height: 1.25;
+}
+.atlas-ap-dock, .atlas-ap-panel {
+  border: 1px solid #85a79799; border-left: 2px solid #96ffce; background: #10231cee; padding: 6px;
+}
+.atlas-ap-dock { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.atlas-ap-summary { grid-column: 1 / -1; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.atlas-ap-summary strong, .atlas-ap-summary span { display: block; }
+.atlas-ap-summary span { color: #c3dbc8; margin-top: 2px; }
+.atlas-ap[data-status="off"] .atlas-ap-dock { border-left-color: #85a79799; }
+.atlas-ap button, .atlas-ap :is(input, select) {
+  min-width: 0; min-height: 32px; border: 1px solid #91aa9c99; border-radius: 2px;
+  background: #1c332d; color: inherit; padding: 4px 6px; font: inherit;
+}
+.atlas-ap button:hover:not(:disabled), .atlas-ap button[aria-expanded="true"] { border-color: #96ffce; }
+.atlas-ap button:disabled { cursor: default; }
+.atlas-ap :is(button, input, select):focus-visible { outline: 2px solid #ffc277; outline-offset: 1px; }
+#atlas-ap-take-control:not(:disabled) { color: #ffce9d; }
+.atlas-ap-panel {
+  display: grid; gap: 7px; margin-top: 4px;
+  max-height: max(86px, calc(100dvh - var(--atlas-ap-top) - var(--atlas-ap-floor) - var(--atlas-ap-dock-height, 78px) - 4px));
+  overflow: auto; overscroll-behavior: contain; touch-action: pan-y;
+}
+.atlas-ap-panel label { display: grid; gap: 3px; min-width: 0; }
+.atlas-ap-panel :is(input, select) { width: 100%; }
+.atlas-ap-fields {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 6px;
+  border: 0; margin: 0; padding: 0; min-width: 0;
+}
+.atlas-ap-panel p { margin: 0; font-size: 10px; color: #c3dbc8; }
+#atlas-ap-error { color: #ffd1a5; }
+body[data-touch="on"] .atlas-ap { --atlas-ap-floor: 330px; }
+body[data-touch="on"] .atlas-ap :is(button, input, select) { min-height: 44px; }
+body[data-touch="on"] .atlas-ap :is(input, select) { font-size: 16px; }
+@media (max-width: 900px) and (min-height: 481px), (max-width: 900px) and (orientation: portrait) {
+  .atlas-ap { --atlas-ap-top: 125px; width: auto; right: 4%; }
+  .atlas-ap-dock { grid-template-columns: minmax(0, 1fr) max-content max-content; align-items: center; }
+  .atlas-ap-summary { grid-column: auto; }
+  .atlas-ap-summary span { font-size: 10px; }
+  .atlas-ap-panel {
+    width: min(290px, calc(100% - 102px));
+    max-height: clamp(68px, calc(39dvh - var(--atlas-ap-top) - var(--atlas-ap-dock-height, 58px) - 8px), 220px);
+  }
+  body[data-world-atlas="on"][data-vehicle="flight"][data-phase="racing"] .hud {
+    --hud-top: calc(133px + var(--atlas-ap-dock-height, 61px));
+  }
+  body[data-atlas-plan="open"][data-world-atlas="on"] .race-timing,
+  body[data-atlas-plan="open"][data-world-atlas="on"][data-camera="cockpit"]:not([data-flight-view="forward"]) .flight-guidance {
+    visibility: hidden;
+  }
+}
+@media (max-width: 700px) and (min-height: 481px), (max-width: 700px) and (orientation: portrait) {
+  .atlas-ap { --atlas-ap-top: 111px; }
+  body[data-world-atlas="on"][data-vehicle="flight"][data-phase="racing"] .hud {
+    --hud-top: calc(119px + var(--atlas-ap-dock-height, 61px));
+  }
+}
+@media (max-height: 480px) and (orientation: landscape) {
+  .atlas-ap { --atlas-ap-top: 63px; width: min(245px, 27vw); }
+  .atlas-ap-panel {
+    max-height: clamp(68px, calc(100dvh - var(--atlas-ap-top) - var(--atlas-ap-dock-height, 96px) - 172px), 180px);
+  }
+  body[data-world-atlas="on"][data-phase="racing"] .race-timing,
+  body[data-world-atlas="on"][data-phase="racing"][data-camera="cockpit"]:not([data-flight-view="forward"]) .flight-guidance {
+    top: calc(71px + var(--atlas-ap-dock-height, 96px) - var(--hud-top));
+  }
+  body[data-atlas-plan="open"][data-world-atlas="on"] .race-timing,
+  body[data-atlas-plan="open"][data-world-atlas="on"][data-camera="cockpit"]:not([data-flight-view="forward"]) .flight-guidance {
+    visibility: hidden;
+  }
+}
+@media (max-width: 760px) and (max-height: 480px) and (orientation: landscape) {
+  body[data-world-atlas="on"][data-phase="racing"] #flight-view-controls { left: 56%; }
+}
+
 body[data-vehicle="flight"][data-flight-hud="off"] #hud > :not(.pause-button, .training-dashboard),
 body[data-vehicle="flight"][data-camera="cockpit"] #hud > :is(.race-timing, .telemetry, .speedometer) { display: none; }
 body[data-vehicle="flight"][data-camera="cockpit"] .flight-guidance {

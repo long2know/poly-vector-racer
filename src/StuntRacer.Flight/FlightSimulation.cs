@@ -6,7 +6,7 @@ namespace StuntRacer.Flight;
 /// Independently authored, fixed-step jet-flight game dynamics. This is not an original-game
 /// port, an aircraft specification, or a model intended for real-world flight training.
 /// </summary>
-public sealed class FlightSimulation : IFlightSession
+public sealed partial class FlightSimulation : IFlightSession
 {
     private const double Gravity = 9.81;
     private const double Mass = 10_000;
@@ -82,15 +82,7 @@ public sealed class FlightSimulation : IFlightSession
     public bool TerrainWaiting => _terrainWaiting;
     public FlightSnapshot Snapshot => CreateSnapshot();
 
-    public FlightSnapshot Advance(double seconds, FlightInput input)
-    {
-        FixedStepClock.ValidateDelta(seconds);
-        ArgumentNullException.ThrowIfNull(input);
-        var controls = input.Normalize();
-        if (_phase is Phase.Countdown or Phase.Flying)
-            _clock.Advance(seconds, step => Step(step, controls));
-        return CreateSnapshot();
-    }
+    public FlightSnapshot Advance(double seconds, FlightInput input) => AdvanceFlight(seconds, input, false);
 
     public void Command(string command)
     {
@@ -109,6 +101,8 @@ public sealed class FlightSimulation : IFlightSession
             case "pause":
                 if (_phase is Phase.Flying or Phase.Countdown)
                 {
+                    if (_atlasPlan is { } plan && AtlasGuidanceFor(plan).Rate > 1)
+                        _clock.DiscardRemainder();
                     _resumePhase = _phase;
                     _resumeMessage = _message;
                     _phase = Phase.Paused;
@@ -124,6 +118,7 @@ public sealed class FlightSimulation : IFlightSession
                 break;
             case "restart":
             case "garage":
+                ResetAtlasAutopilot();
                 _clock.Reset();
                 _time = 0;
                 _fuel = 1;
@@ -140,6 +135,7 @@ public sealed class FlightSimulation : IFlightSession
                     _message = _onGround ? "Runway departure in 3 seconds." : "Scenic departure in 3 seconds.";
                 break;
             case "recover":
+                ResetAtlasAutopilot();
                 PlaceOnRunway();
                 _phase = Phase.Ready;
                 _countdown = 0;
@@ -151,6 +147,7 @@ public sealed class FlightSimulation : IFlightSession
             case "air-start":
                 if (_phase is Phase.Ready or Phase.Paused or Phase.Crashed)
                 {
+                    if (_phase != Phase.Ready) ResetAtlasAutopilot();
                     PlaceOnRunway();
                     if ((World.Atlas?.Destination ?? World.Geography?.Destination) is { } departure)
                         BeginAirborne(departure);
@@ -173,6 +170,7 @@ public sealed class FlightSimulation : IFlightSession
                 // Paused Advance and non-recovery controls cannot mutate the frozen aircraft.
                 if (_phase is Phase.Ready or Phase.Countdown or Phase.Flying)
                 {
+                    DisengageAtlasAutopilot("Autopilot off — landing gear input.");
                     _gearDown = !_gearDown;
                     _message = _gearDown ? "Landing gear extended." : "Landing gear retracted.";
                 }
@@ -182,7 +180,7 @@ public sealed class FlightSimulation : IFlightSession
         }
     }
 
-    private bool Step(double dt, FlightInput input)
+    private bool Step(double dt, FlightInput input, AtlasGuidance? guidance = null)
     {
         if (_phase is not (Phase.Countdown or Phase.Flying))
             return false;
@@ -221,10 +219,14 @@ public sealed class FlightSimulation : IFlightSession
         var alpha = Math.Atan2(-FlightVec.Dot(_velocity, _up), Math.Max(1, forwardSpeed));
         var sideslip = Math.Atan2(FlightVec.Dot(_velocity, right), Math.Max(12, forwardSpeed));
 
+        if (guidance is { } pilot)
+            input = AtlasControls(pilot, speed, fast, alpha, pressureArea, mach);
         var throttleTarget = _fuel > 0 ? input.Throttle : 0;
         _throttle += (throttleTarget - _throttle) * (1 - Math.Exp(-dt / 0.65));
         _afterburner = input.Afterburner && _throttle >= 0.85 && _fuel > 0;
         var burnRate = 0.00004 + 0.00045 * _throttle + (_afterburner ? 0.0019 : 0);
+        if (guidance is not null)
+            burnRate *= AtlasDryFuelScale;
         _fuel = Math.Max(0, _fuel - burnRate * dt);
         if (_fuel == 0)
             _afterburner = false;
@@ -252,18 +254,7 @@ public sealed class FlightSimulation : IFlightSession
         var direction = _velocity.Unit(_forward);
         var liftDirection = (_up - direction * FlightVec.Dot(_up, direction)).Unit(_up);
         var liftAcceleration = LiftAcceleration(pressureArea, liftCoefficient);
-        var dragCoefficient = 0.024 + 0.065 * liftCoefficient * liftCoefficient +
-                              (_gearDown ? 0.034 : 0) + (input.Brake ? 0.16 : 0) +
-                              0.19 * stallLoss;
-        if (fast > 0)
-        {
-            // Smooth wave drag at transonic speed. The clean jet can overcome it on afterburner;
-            // brakes, gear and induced drag still take energy out of the aircraft.
-            var wave = 0.010 * Math.Exp(-Math.Pow((mach - 1.03) / 0.18, 2));
-            dragCoefficient += fast * (-0.008 + wave + 0.004 * Smooth(1.05, 1.7, mach));
-        }
-        dragCoefficient += (1 - fast) * 0.000004 * Math.Pow(Math.Max(0, speed - 260), 2);
-        var dragAcceleration = Math.Min(90, pressureArea * dragCoefficient / Mass);
+        var dragAcceleration = DragAcceleration(pressureArea, liftCoefficient, stallLoss, fast, speed, mach, input.Brake);
         var sideAcceleration = SideAcceleration(sideslip, pressureArea);
         var properAcceleration = _forward * thrust + liftDirection * liftAcceleration -
                                  direction * dragAcceleration + right * sideAcceleration;
@@ -308,6 +299,8 @@ public sealed class FlightSimulation : IFlightSession
         if (World.Atlas is not null)
         {
             const int pole = WorldAtlasGrid.HalfHeight;
+            if (_position.X >= WorldAtlasGrid.HalfWidth) _atlasLapOffset += WorldAtlasGrid.Width;
+            if (_position.X < -WorldAtlasGrid.HalfWidth) _atlasLapOffset -= WorldAtlasGrid.Width;
             _position = _position with { X = WorldAtlasGrid.Wrap(_position.X), Z = Math.Clamp(_position.Z, -pole, pole) };
             if (_position.Z >= pole && _velocity.Z > 0 || _position.Z <= -pole && _velocity.Z < 0)
                 _velocity = _velocity with { Z = 0 };
@@ -374,8 +367,7 @@ public sealed class FlightSimulation : IFlightSession
         {
             var bank = RenderRoll();
             var usableLoad = pressureArea * AttachedLiftCoefficient(AssistedTrimAngleLimit) / (Mass * Gravity);
-            var maximumBank = _worldJet ? 1.05 - 0.40 * Smooth(270, 460, speed) : 1.01;
-            var bankLimit = 0.25 + (maximumBank - 0.25) * Smooth(0.95, 2.15, usableLoad);
+            var bankLimit = AssistedBankLimit(speed, usableLoad);
             // The input is positive-right; the rendered bank angle is negative-right.
             targetRoll = Math.Clamp(3.0 * Math.IEEERemainder(bank + input.Roll * bankLimit, Math.Tau),
                 -rollAuthority, rollAuthority);
@@ -512,12 +504,14 @@ public sealed class FlightSimulation : IFlightSession
         _stalled = false;
         _gForce = 0;
         _message = message;
+        DisengageAtlasAutopilot("Autopilot off — flight ended.");
     }
 
     private void PlaceOnRunway()
     {
         var spawn = World.RunwayStart;
         _position = new FlightVec(spawn.X, spawn.Y, spawn.Z);
+        _atlasLapOffset = 0;
         _velocity = default;
         _rollRate = 0;
         _pitchRate = 0;
@@ -588,6 +582,29 @@ public sealed class FlightSimulation : IFlightSession
     private static double LiftAcceleration(double pressureArea, double coefficient) =>
         Math.Clamp(pressureArea * coefficient / Mass, -8.5 * Gravity, 8.5 * Gravity);
 
+    private double DragAcceleration(
+        double pressureArea, double liftCoefficient, double stallLoss, double fast, double speed, double mach, bool brake)
+    {
+        var dragCoefficient = 0.024 + 0.065 * liftCoefficient * liftCoefficient +
+                              (_gearDown ? 0.034 : 0) + (brake ? 0.16 : 0) +
+                              0.19 * stallLoss;
+        if (fast > 0)
+        {
+            // Smooth wave drag at transonic speed. The clean jet can overcome it on afterburner;
+            // brakes, gear and induced drag still take energy out of the aircraft.
+            var wave = 0.010 * Math.Exp(-Math.Pow((mach - 1.03) / 0.18, 2));
+            dragCoefficient += fast * (-0.008 + wave + 0.004 * Smooth(1.05, 1.7, mach));
+        }
+        dragCoefficient += (1 - fast) * 0.000004 * Math.Pow(Math.Max(0, speed - 260), 2);
+        return Math.Min(90, pressureArea * dragCoefficient / Mass);
+    }
+
+    private double AssistedBankLimit(double speed, double usableLoad)
+    {
+        var maximumBank = _worldJet ? 1.05 - 0.40 * Smooth(270, 460, speed) : 1.01;
+        return 0.25 + (maximumBank - 0.25) * Smooth(0.95, 2.15, usableLoad);
+    }
+
     private static double SideAcceleration(double sideslip, double pressureArea) =>
         Math.Clamp(-sideslip * pressureArea * 0.75 / Mass, -18, 18);
 
@@ -617,7 +634,10 @@ public sealed class FlightSimulation : IFlightSession
             _ => throw new InvalidOperationException()
         },
         _time, _countdown, _clock.Alpha, _clock.Tick,
-        _landings, _crashes, _recoveries, _terrainWaiting ? "Waiting for streamed terrain." : _message);
+        _landings, _crashes, _recoveries, _terrainWaiting ? "Waiting for streamed terrain." : _message)
+    {
+        AtlasAutopilot = CreateAtlasAutopilotSnapshot()
+    };
 
     private enum Phase { Ready, Countdown, Flying, Paused, Crashed }
 }

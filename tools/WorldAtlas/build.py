@@ -11,7 +11,7 @@ from zipfile import BadZipFile, ZipFile
 from atlas import (SEATTLE_ARCHIVE, SLUG, PackWriter, archive_manifest, base_presets, bounds_valid, decode_base,
                    digest, json_bytes, span)
 from features import natural_earth
-from profiles import LONGITUDE_BANDS, PILOTS, REFINEMENTS, stock
+from profiles import LONGITUDE_BANDS, OCEAN_FEATURES, OCEAN_TERRAIN, PILOTS, REFINEMENTS, stock
 from sources import (Source, credits, fetch, notice, osm_source, require_https, terrain_sources,
                      vector_sources)
 from terrain import build_base, plan_boxes, rectangles, root_groups, write_tiles
@@ -97,7 +97,7 @@ def area_setup(args):
         return profile
     if not any((args.terrain_box, args.root_rect, args.osm)):
         raise ValueError("Unknown preset; specify --terrain-box, --root-rect, or --osm.")
-    if args.id in LONGITUDE_BANDS or args.id in PILOTS or args.id in REFINEMENTS or (
+    if any(args.id in profiles for profiles in (LONGITUDE_BANDS, PILOTS, REFINEMENTS, OCEAN_TERRAIN, OCEAN_FEATURES)) or (
             args.id.endswith("-osm") and args.id[:-4] in PILOTS):
         raise ValueError("A custom pack must use a new ID, not a stock profile ID.")
     if args.osm and not (args.osm_url and args.feature_box):
@@ -205,9 +205,9 @@ def fetch_inputs(args):
         inputs = [Source("osm", args.output, require_https(args.url))]
     elif args.target in ("washington", "panama", "peru", "sudeste"):
         inputs = [osm_source(args.inputs, args.target)]
-    elif args.target in PILOTS or args.target in REFINEMENTS:
-        _, _, _, _, local = stock(args.target, args.raw, args.inputs)
-        inputs = [src for src in local if src.key == "copernicus-dem"]
+    elif any(args.target in profiles for profiles in (PILOTS, REFINEMENTS, OCEAN_TERRAIN, OCEAN_FEATURES)):
+        _, _, osm, _, local = stock(args.target, args.raw, args.inputs)
+        inputs = [osm] if osm else [src for src in local if src.key == "copernicus-dem"]
         if not inputs:
             raise ValueError("This pilot does not require a separate public DEM.")
     else:
@@ -281,7 +281,7 @@ def main():
     region.add_argument("--osm-index-file", type=Path, help="use and clean an unused project-local disk-backed index")
     commands.add_parser("list", help="list available built-in terrain and OSM area IDs")
     download = commands.add_parser("fetch", help="fetch licensed datasets in bounded whole-file downloads")
-    download.add_argument("target", help="'base', a terrain profile ID, 'washington', 'panama', 'peru', 'sudeste', or 'osm'")
+    download.add_argument("target", help="'base', a scenery profile ID, 'washington', 'panama', 'peru', 'sudeste', or 'osm'")
     download.add_argument("--inputs", type=Path, default=INPUTS)
     download.add_argument("--raw", type=Path, default=INPUTS)
     download.add_argument("--output", type=Path, help="destination for 'fetch osm'")
@@ -306,6 +306,10 @@ def main():
                 print(f"{key + '-osm':22} {pilot.name}; OSM-only overlay")
             for key, (name, _, _) in REFINEMENTS.items():
                 print(f"{key:22} {name}; drop-in terrain refinement")
+            for key, (name, *_) in OCEAN_TERRAIN.items():
+                print(f"{key:22} {name}; drop-in terrain refinement")
+            for key, (name, *_) in OCEAN_FEATURES.items():
+                print(f"{key:22} {name}; OSM-only overlay")
             return
         if args.action == "fetch":
             fetch_inputs(args)

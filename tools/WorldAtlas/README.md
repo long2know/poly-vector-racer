@@ -101,6 +101,28 @@ mounted without rebuilding the bands. Run, for example,
 `python tools/WorldAtlas/build.py fetch alps-detail` and
 `python tools/WorldAtlas/build.py area alps-detail`.
 
+The long-haul scenery profiles add 32 m mesh cores at London/Heathrow,
+San Francisco Bay, Oahu and Reykjavík/Reykjanes. Independent OpenStreetMap
+overlays provide mapped buildings, roads, parks and landmarks in those areas
+and in Tokyo, which can use the existing `japan-kanto-detail.zip`. Hawaiʻi's
+other islands and Iceland's south coast have wider but coarser coverage.
+
+| Area | Terrain profile | Feature profile |
+|---|---|---|
+| London | `london-detail` | `london-osm` |
+| San Francisco | `san-francisco-detail` | `san-francisco-osm` |
+| Tokyo | existing `japan-kanto-detail` | `tokyo-osm` |
+| Hawaiʻi | `hawaii-detail` | `hawaii-osm` |
+| Iceland | `iceland-detail` | `iceland-osm` |
+
+Build each missing profile with `build.py fetch <profile>` and
+`build.py area <profile>`, using the same inputs and `base.zip` as the
+installed Atlas. Copy the new ZIPs into `STUNT_WORLD_ATLAS` and restart the
+host. City extracts come from BBBike and the island extracts use dated
+Geofabrik snapshots; the archive receipts retain the exact source URLs and
+hashes. These are additions, not replacements for the global bands or Seattle
+archive.
+
 ### Custom areas and refreshing
 
 Create terrain and OSM as independent ZIPs. Use exclusive L0 root rectangles

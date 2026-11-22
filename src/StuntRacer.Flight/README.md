@@ -75,6 +75,40 @@ high mountainous starts have extra clearance for peaks understated by the global
 fallback. Airport points do not authorize landing there. Existing runway,
 original flight, and Seattle behavior are unchanged. For play, not navigation.
 
+#### Atlas autopilot and time compression
+
+Only Atlas publishes `FlightSnapshot.AtlasAutopilot`. Use
+`ConfigureAtlasAutopilot(AtlasAutopilotCommand)` to `engage` a `route` toward
+`destination: {lonDeg, latDeg}` or `hold` a compass `headingDeg` (0–360, omitted
+to hold the current course). Both accept `altitudeM` (1500–12000), `speedMps`
+(180–300) and `rate` (1, 2, 5 or 10). `setRate` changes the desired rate without
+changing the flight plan; `takeControl` disengages it. The defaults are
+10,500 m, 250 m/s and 1× (or the rate previously selected for this flight).
+
+Route targets are the nearest fixed unwrapped X copy in the Atlas projection;
+exact antipodes tie west. Compare X to the wrapped aircraft position using the
+short delta, not raw subtraction. Capture occurs within 5 km, at 1×, and
+continues airborne on the captured course without autoland. Polar routes
+approach the boundary obliquely; outward heading holds near either pole follow
+a tangent. The native floor is fixed at 10,500 m (500 m over the maximum valid
+WFA1 or WFT1 height); lower altitude commands show the clamp in `reason`.
+The climb begins from the actual pose and examines nearby active terrain;
+engagement and optional detail loading do not raise the aircraft.
+
+Call `AdvanceAtlas(seconds, input, manualIntent)` once per wall frame. The
+pilot drives the existing roll, pitch and dry throttle controls at 120 Hz.
+It compresses stable airborne cruise only, with at most 60 fixed ticks per
+frame instead of the usual 30. Acquisition, approach, arrival, low fuel and
+unsafe flight return to 1×. Pause, takeover or loss of cruise discard pending
+accelerated time. Roll, pitch, yaw, airbrake, afterburner, gear, or explicit
+manual intent cancel the pilot before manual physics; throttle alone does not.
+
+The pilot consumes 1% of the normal dry fuel rate as a game endurance setting.
+Manual and afterburner burn remain unchanged, and engagement never refuels.
+`projectedFuel` is an estimate on active routes: expected level dry thrust
+plus an allowance for initial climb and turning, not a guaranteed reserve.
+`Aircraft.Fuel` remains the authoritative tank level.
+
 ### Flight and commands
 
 - `start`: ready → three-second countdown → flying, initially on the runway.
@@ -128,3 +162,15 @@ The standalone SDK assertion executable has no test-framework dependencies.
 Scenarios use only public commands/inputs/observations: runway takeoff, mirrored
 turns, stall/descent, actual gear-down approach/flare/braking versus hard/gear-up/
 water impacts, full attitude maneuvers, fixed-step schedules and lifecycle.
+Atlas autopilot checks cover command validation, fixed-step equivalence,
+takeover, fuel, streamed terrain bounds, capture and polar/date-line navigation.
+
+The opt-in endurance check flies NYC–London in both directions, Tokyo–San
+Francisco across the date line, and two eastbound equatorial laps, first using
+hold and route waypoints and then heading hold alone on the same tank. Supply
+the bundled `base.zip` or an explicit extracted WFA1 `base.bin`:
+
+```sh
+dotnet run -c Release --project tests/StuntRacer.FlightChecks -- \
+  --atlas-endurance artifacts/world-atlas/base.zip
+```

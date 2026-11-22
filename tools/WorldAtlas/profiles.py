@@ -92,12 +92,62 @@ REFINEMENTS = {
     )),
 }
 
+OCEAN_TERRAIN = {
+    "london-detail": (
+        "London: Thames, Heathrow and the City", ("N51_00_W001_00", "N51_00_E000_00"),
+        (((-0.78, 51.25, 0.44, 51.74), 7), ((-0.56, 51.34, 0.22, 51.63), 8)),
+    ),
+    "san-francisco-detail": (
+        "San Francisco: Golden Gate, Bay and Pacific Coast", ("N37_00_W123_00", "N38_00_W123_00"),
+        (((-123, 37.40, -122.05, 38.21), 7), ((-122.63, 37.52, -122.23, 37.95), 8)),
+    ),
+    "hawaii-detail": (
+        "Hawaii: Oahu and Mauna Loa", ("N21_00_W159_00", "N19_00_W156_00", "N20_00_W156_00"),
+        (((-160.35, 18.86, -154.75, 22.26), 5), ((-158.32, 21.23, -157.65, 21.73), 8)),
+    ),
+    "iceland-detail": (
+        "Iceland: Reykjavik and Reykjanes", ("N64_00_W023_00", "N63_00_W023_00", "N63_00_W022_00"),
+        (((-23.12, 63.72, -21.76, 64.30), 7), ((-22.75, 63.78, -21.81, 64.20), 8)),
+    ),
+}
+
+OCEAN_FEATURES = {
+    "london-osm": (
+        "London: Crown and Thames OpenStreetMap", (-0.52, 51.25, 0.28, 51.72),
+        "london-bbbike.osm.pbf", "https://download.bbbike.org/osm/bbbike/London/London.osm.pbf",
+    ),
+    "san-francisco-osm": (
+        "San Francisco: Golden Gate and Peninsula OpenStreetMap", (-122.54, 37.54, -122.32, 37.93),
+        "san-francisco.osm.pbf", "https://download.bbbike.org/osm/bbbike/SanFrancisco/SanFrancisco.osm.pbf",
+    ),
+    "tokyo-osm": (
+        "Tokyo: City skyline and Bay OpenStreetMap", (139.6165, 35.5591, 139.9478, 35.7836),
+        "tokyo.osm.pbf", "https://download.bbbike.org/osm/bbbike/Tokyo/Tokyo.osm.pbf",
+    ),
+    "hawaii-osm": (
+        "Hawaii: Oahu and the island landmarks", (-160.4, 18.86, -154.75, 22.28),
+        "hawaii.osm.pbf", "https://download.geofabrik.de/north-america/us/hawaii/hawaii-261120.osm.pbf",
+    ),
+    "iceland-osm": (
+        "Iceland: Reykjavík, Reykjanes and the south coast", (-24.25, 63.26, -18.68, 65.02),
+        "iceland.osm.pbf", "https://download.geofabrik.de/europe/iceland/iceland-261120.osm.pbf",
+    ),
+}
+
 
 def pilot_roots(pilot):
     return set().union(*(groups_for(box, 1) for box, level in pilot.terrain))
 
 
 def stock(pack_id, raw, inputs):
+    if pack_id in OCEAN_TERRAIN:
+        name, coords, boxes = OCEAN_TERRAIN[pack_id]
+        dem = [cop_source(inputs, coord, bucket="https://copernicus-dem-30m.s3.amazonaws.com", release="")
+               for coord in coords]
+        return name, plan_boxes(boxes), None, None, dem
+    if pack_id in OCEAN_FEATURES:
+        name, bounds, filename, url = OCEAN_FEATURES[pack_id]
+        return name, {}, Source("osm", inputs / filename, url), bounds, []
     if pack_id in REFINEMENTS:
         name, coords, rectangles = REFINEMENTS[pack_id]
         plan = {}
