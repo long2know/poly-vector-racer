@@ -10,6 +10,9 @@ public sealed record FlightInput(
     bool Afterburner,
     bool Brake)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Assisted { get; init; }
+
     internal FlightInput Normalize()
     {
         RequireFinite(Roll, nameof(Roll));

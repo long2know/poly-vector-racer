@@ -275,10 +275,14 @@ public static partial class Browser
 
     [JSExport]
     public static string FlightFrame(double seconds, double roll, double pitch, double yaw,
-        double throttle, bool afterburner, bool brake)
+        double throttle, bool afterburner, bool brake, bool assisted)
     {
         var session = flight ?? throw new InvalidOperationException("Select the Flight activity before flying.");
-        return FlightState(session.Advance(seconds, new FlightInput(roll, pitch, yaw, throttle, afterburner, brake)));
+        var input = new FlightInput(roll, pitch, yaw, throttle, afterburner, brake)
+        {
+            Assisted = assisted && session is not OriginalFlightSession
+        };
+        return FlightState(session.Advance(seconds, input));
     }
 
     [JSExport]

@@ -5,7 +5,7 @@ namespace StuntRacer.FlightChecks;
 
 internal static class AtlasChecks
 {
-    private static byte[] Fallback(short height)
+    internal static byte[] Fallback(short height)
     {
         var bytes = new byte[WorldAtlasBase.ByteLength];
         "WFA1"u8.CopyTo(bytes);

@@ -1394,7 +1394,7 @@ function tick(now) {
     const simulationStart = performance.now();
     state = JSON.parse(state?.flight
       ? api.FlightFrame(Math.min(dt, 0.25), activeInput.roll, activeInput.pitch, activeInput.yaw,
-        activeInput.throttle, activeInput.afterburner, activeInput.brake)
+        activeInput.throttle, activeInput.afterburner, activeInput.brake, activeInput.assisted)
       : api.Frame(state?.drive && !scene.hasDetailedGround(state.player) ? 0 : Math.min(dt, 0.25),
         activeInput.steer, activeInput.throttle, activeInput.brake, activeInput.boost));
     simulationMs = simulationMs * 0.95 + (performance.now() - simulationStart) * 0.05;
@@ -1507,6 +1507,7 @@ function bind() {
     try { graphics.setQuality(event.target.value); }
     catch (error) { fail(error); }
   });
+  $('flight-handling').addEventListener('change', event => input.setFlightHandling(event.target.value));
   const changeGameMode = event => { void selectGameMode(event.target.value); };
   $('game-mode').addEventListener('change', changeGameMode);
   $('session-mode').addEventListener('change', changeGameMode);
@@ -1805,6 +1806,7 @@ async function boot() {
         : 'Controller detected. Open controls and choose Classic joystick if its mapping is non-standard.');
     }
   });
+  input.setFlightHandling($('flight-handling').value);
   applyTouchPreference();
   text('load-status', 'Loading .NET WebAssembly. The first run may take a moment...');
   const { dotnet } = await import('./_framework/dotnet.js');
@@ -1872,6 +1874,7 @@ async function boot() {
       audioState: audio.context?.state ?? 'locked', audioRms: audio.level(),
       audioEvents: audio.events, muted: audio.muted, camera,
       flightHud: document.body.dataset.flightHud !== 'off',
+      flightHandling: state.flight && !compatibility.flightSourceActive ? input.flightHandling : null,
       flightCamera: state.flight && scene.eye ? { view: scene.flightView,
         eye: scene.eye.slice(), target: scene.target.slice() } : null,
       controller: input.connected, recording: capture.recorder?.state ?? 'inactive',

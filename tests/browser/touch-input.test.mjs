@@ -227,11 +227,48 @@ test('number row and numpad snap the flight view without changing flight axes or
       ['flight-view', 'left'], ['flight-view', 'right'], ['flight-view', 'rear'],
       ['flight-view', 'forward-right'], ['flight-view', 'rear-left'], ['flight-view', 'forward'],
     ]);
-    assert.deepEqual(input.sample(0.2), { roll: 0, pitch: 0, yaw: 0, throttle: 0.3, afterburner: false, brake: false });
+    assert.deepEqual(input.sample(0.2), {
+      roll: 0, pitch: 0, yaw: 0, throttle: 0.3, afterburner: false, brake: false, assisted: true,
+    });
     key('KeyD');
     key('KeyQ');
     const { roll, yaw } = input.sample();
     assert.deepEqual({ roll, yaw }, { roll: 1, yaw: -1 }, 'roll and rudder remain independent while looking around');
+  });
+});
+
+test('flight handling applies to keyboard, touch and gamepad without changing axes or resetting throttle', () => {
+  withTouch((input, _buttons, pad, _thumb, { setGamepad }) => {
+    const key = (type, code) => window.dispatchEvent(Object.assign(new Event(type), { code }));
+    input.setMode('flight', 0.35);
+    for (const [code, roll] of [['KeyA', -1], ['ArrowLeft', -1], ['KeyD', 1], ['ArrowRight', 1]]) {
+      key('keydown', code);
+      assert.equal(input.sample().roll, roll);
+      assert.equal(input.sample().assisted, true);
+      key('keyup', code);
+      assert.equal(input.sample().roll, 0);
+    }
+
+    pointer(pad, 'pointerdown', 1, 150, 40);
+    const assistedTouch = input.sample();
+    assert.ok(assistedTouch.roll > 0.8);
+    input.setFlightHandling('direct');
+    assert.deepEqual(input.sample(), { ...assistedTouch, assisted: false });
+    pointer(pad, 'pointerup', 1);
+    input.setMode('racing');
+    assert.equal(input.sample().assisted, undefined);
+    input.setMode('flight', 0.47);
+    input.sample();
+
+    const buttons = Array.from({ length: 17 }, () => ({ value: 0 }));
+    setGamepad({ connected: true, axes: [-1, 0, 0.6], buttons });
+    const directPad = input.sample();
+    assert.equal(directPad.roll, -1);
+    assert.ok(directPad.yaw > 0.5);
+    assert.equal(directPad.assisted, false, 'the handling choice survives a mode change');
+    assert.equal(directPad.throttle, 0.47, 'the new flight still uses its own starting throttle');
+    input.setFlightHandling('assisted');
+    assert.deepEqual(input.sample(), { ...directPad, assisted: true });
   });
 });
 

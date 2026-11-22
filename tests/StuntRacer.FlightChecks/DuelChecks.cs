@@ -83,6 +83,12 @@ internal static class DuelChecks
 
     public static void ThreePassClear()
     {
+        ThreePassClear(Cruise, 1.75, 6.65);
+        ThreePassClear(Cruise with { Assisted = true }, 3.8, 6.5);
+    }
+
+    private static void ThreePassClear(FlightInput cruise, double bankUntil, double oppositeUntil)
+    {
         var duel = new FlightTagDuel();
         duel.Command("start");
         var lastTag = duel.Snapshot;
@@ -91,9 +97,9 @@ internal static class DuelChecks
             var seconds = i / 60.0;
             var input = seconds switch
             {
-                >= 1.3 and < 1.75 => Cruise with { Roll = 1 },
-                >= 6 and < 6.65 => Cruise with { Roll = -1 },
-                _ => Cruise
+                >= 1.3 when seconds < bankUntil => cruise with { Roll = 1 },
+                >= 6 when seconds < oppositeUntil => cruise with { Roll = -1 },
+                _ => cruise
             };
             var snapshot = duel.Advance(Frame, input);
             if (snapshot.Duel is not { InRange: true, NextPass: true, CooldownSeconds: 0, Success: null }) continue;
@@ -105,9 +111,10 @@ internal static class DuelChecks
         }
         var clear = duel.Snapshot;
         Check.That(clear is { Phase: "finished", Duel: { Score: 3, TimeRemaining: > 0, Success: true }, Aircraft.Crashed: false },
-            "A steered flight can follow the moving glider and win before the clock expires.");
+            $"A steered flight can follow the moving glider and win before the clock expires (assisted: {cruise.Assisted}): " +
+            $"score={clear.Duel?.Score}; {FlightScenarios.Describe(clear)}");
         duel.Command("resume");
-        Check.That(duel.Advance(.25, Cruise) == clear, "Winning freezes flight just like a timeout.");
+        Check.That(duel.Advance(.25, cruise) == clear, "Winning freezes flight just like a timeout.");
     }
 
     public static void IsolatedActivity()

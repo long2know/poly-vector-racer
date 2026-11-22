@@ -98,8 +98,11 @@ ground transitions, not every ground tick.
 
 The model integrates thrust, gravity, velocity-dependent lift/drag, angle-of-
 attack lift loss, sideslip, aerodynamic control authority/damping, gear/airbrake
-drag, wheel braking, fuel and high-throttle afterburner. There is no position
-path, altitude lock or automatic bank leveling.
+drag, wheel braking, fuel and high-throttle afterburner. There is no canned
+path or altitude lock. Native `FlightInput` defaults to direct roll-rate control.
+Set `Assisted = true` to command a bank angle and level the wings on release.
+Lift and yaw trim work within the available aerodynamic load and follow the
+velocity path; they do not prevent low-energy stalls. Runway rudder is unchanged.
 
 Only the paved runway is landable: gear down, sink no worse than 4.5 m/s, ground
 speed no higher than 105 m/s, wings near level, sensible nose attitude and runway

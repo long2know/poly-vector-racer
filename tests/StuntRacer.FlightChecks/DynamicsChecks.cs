@@ -6,6 +6,12 @@ internal static class DynamicsChecks
 {
     public static void RunwayTakeoffAndClimb()
     {
+        RunwayTakeoffAndClimb(assisted: false);
+        RunwayTakeoffAndClimb(assisted: true);
+    }
+
+    private static void RunwayTakeoffAndClimb(bool assisted)
+    {
         var simulation = new FlightSimulation();
         simulation.Command("start");
         FlightScenarios.Advance(simulation, 3, FlightScenarios.Idle);
@@ -14,7 +20,7 @@ internal static class DynamicsChecks
         {
             var a = simulation.Snapshot.Aircraft;
             var pitch = a.OnGround ? a.Speed < 58 ? 0 : 0.45 : Math.Clamp((0.2 - a.Pitch) * 3, -0.5, 0.5);
-            simulation.Advance(FlightScenarios.Step, new FlightInput(0, pitch, 0, 1, false, false));
+            simulation.Advance(FlightScenarios.Step, new FlightInput(0, pitch, 0, 1, false, false) { Assisted = assisted });
             if (liftoff is null && !simulation.Snapshot.Aircraft.OnGround)
                 liftoff = simulation.Snapshot;
         }
@@ -34,10 +40,16 @@ internal static class DynamicsChecks
 
     public static void ControlSigns()
     {
-        static AircraftSnapshot Probe(FlightInput input)
+        ControlSigns(assisted: false);
+        ControlSigns(assisted: true);
+    }
+
+    private static void ControlSigns(bool assisted)
+    {
+        AircraftSnapshot Probe(FlightInput input)
         {
             var simulation = FlightScenarios.AirStart();
-            FlightScenarios.Advance(simulation, 0.5, input);
+            FlightScenarios.Advance(simulation, 0.5, input with { Assisted = assisted });
             return simulation.Snapshot.Aircraft;
         }
         var rightRoll = Probe(new FlightInput(0.6, 0, 0, 0.5, false, false));
@@ -45,8 +57,9 @@ internal static class DynamicsChecks
         Check.That(rightRoll.Roll < -0.1 && rightRoll.Up.X > 0.1 &&
                    leftRoll.Roll > 0.1 && leftRoll.Up.X < -0.1,
             "Positive roll banks RIGHT, lowering the right wing (negative render Roll)");
-        var rightYaw = Probe(new FlightInput(0, 0, 0.8, 0.5, false, false));
-        var leftYaw = Probe(new FlightInput(0, 0, -0.8, 0.5, false, false));
+        var rudder = assisted ? 0.5 : 0.8;
+        var rightYaw = Probe(new FlightInput(0, 0, rudder, 0.5, false, false));
+        var leftYaw = Probe(new FlightInput(0, 0, -rudder, 0.5, false, false));
         Check.That(rightYaw.Yaw > 0.05 && rightYaw.Forward.X > 0.05 &&
                    leftYaw.Yaw < -0.05 && leftYaw.Forward.X < -0.05,
             "Positive yaw points the nose RIGHT");
@@ -57,6 +70,18 @@ internal static class DynamicsChecks
             "Positive pitch pulls UP and changes the flight path, not only the mesh");
         foreach (var a in new[] { rightRoll, leftRoll, rightYaw, leftYaw, pull, push })
             FlightScenarios.Pose(a, "Control sign probe");
+
+        var runway = new FlightSimulation();
+        runway.Command("start");
+        FlightScenarios.Advance(runway, 3, FlightScenarios.Idle);
+        var ground = new FlightInput(1, 0, 0, .6, false, false) { Assisted = assisted };
+        FlightScenarios.Advance(runway, 6, ground);
+        var along = runway.Snapshot.Aircraft;
+        FlightScenarios.Advance(runway, .65, ground with { Yaw = .55 });
+        var turned = runway.Snapshot.Aircraft;
+        Check.That(along is { OnGround: true, Yaw: 0, Roll: 0, Speed: > 15 } &&
+                   turned is { OnGround: true, Roll: 0, Yaw: > .05, X: > 0 },
+            $"Runway aileron stays neutral and moderate rudder still steers right (assisted: {assisted}).");
     }
 
     public static void BankedTurnsBothDirections()
@@ -84,6 +109,12 @@ internal static class DynamicsChecks
 
     public static void StallAndDescent()
     {
+        StallAndDescent(assisted: false);
+        StallAndDescent(assisted: true);
+    }
+
+    private static void StallAndDescent(bool assisted)
+    {
         var simulation = FlightScenarios.AirStart();
         var initialSpeed = simulation.Snapshot.Aircraft.Speed;
         var sawStall = false;
@@ -92,7 +123,7 @@ internal static class DynamicsChecks
         FlightSnapshot? descending = null;
         for (var i = 0; i < 120 * 20 && simulation.Snapshot.Phase == "flying"; i++)
         {
-            simulation.Advance(FlightScenarios.Step, new FlightInput(0, 0.28, 0, 0, false, true));
+            simulation.Advance(FlightScenarios.Step, new FlightInput(0, 0.28, 0, 0, false, true) { Assisted = assisted });
             var snapshot = simulation.Snapshot;
             var a = snapshot.Aircraft;
             minimumSpeed = Math.Min(minimumSpeed, a.Speed);
@@ -141,7 +172,13 @@ internal static class DynamicsChecks
 
     public static void GentleLandingAndBraking()
     {
-        var approach = FlightScenarios.Approach();
+        GentleLandingAndBraking(assisted: false);
+        GentleLandingAndBraking(assisted: true);
+    }
+
+    private static void GentleLandingAndBraking(bool assisted)
+    {
+        var approach = FlightScenarios.Approach(assisted: assisted);
         var simulation = approach.Simulation;
         var touchdown = simulation.Snapshot;
         Console.WriteLine($"TRACE approach before contact speed={approach.BeforeContact.Speed:F3} " +
@@ -152,7 +189,7 @@ internal static class DynamicsChecks
                    simulation.World.Sample(touchdown.Aircraft.X, touchdown.Aircraft.Z).LandingSurface is not null,
             $"Public-input approach and flare gently land on the canonical runway: " +
             FlightScenarios.Describe(touchdown));
-        FlightScenarios.Advance(simulation, 20, new FlightInput(0, 0, 0, 0, false, true));
+        FlightScenarios.Advance(simulation, 20, new FlightInput(0, 0, 0, 0, false, true) { Assisted = assisted });
         Check.That(simulation.Snapshot.Phase == "flying" && simulation.Snapshot.Aircraft.OnGround &&
                    simulation.Snapshot.Aircraft.Speed < 0.1 && simulation.Snapshot.Landings == 1,
             $"Ground brakes stop the jet without recounting landings: {FlightScenarios.Describe(simulation.Snapshot)}");

@@ -12,6 +12,9 @@ public sealed class FlightSimulation : IFlightSession
     private const double Mass = 10_000;
     private const double WingArea = 34;
     private const double TrimAngle = 0.06;
+    private const double AssistedTrimAngleLimit = 0.20;
+    private const double ZeroAngleLift = 0.24;
+    private const double LiftSlope = 4.7;
     private const double MaximumSpeed = 450;
     private const string DefaultAircraftId = "f18";
     private readonly FixedStepClock _clock = new(1.0 / 120.0, 0.25);
@@ -218,12 +221,6 @@ public sealed class FlightSimulation : IFlightSession
         var alpha = Math.Atan2(-FlightVec.Dot(_velocity, _up), Math.Max(1, forwardSpeed));
         var sideslip = Math.Atan2(FlightVec.Dot(_velocity, right), Math.Max(12, forwardSpeed));
 
-        UpdateAttitude(dt, input, speed, authority, alpha, sideslip, right, fast, pressureArea);
-        right = FlightVec.Cross(_up, _forward).Unit(right);
-        forwardSpeed = FlightVec.Dot(_velocity, _forward);
-        alpha = Math.Atan2(-FlightVec.Dot(_velocity, _up), Math.Max(1, forwardSpeed));
-        sideslip = Math.Atan2(FlightVec.Dot(_velocity, right), Math.Max(12, forwardSpeed));
-
         var throttleTarget = _fuel > 0 ? input.Throttle : 0;
         _throttle += (throttleTarget - _throttle) * (1 - Math.Exp(-dt / 0.65));
         _afterburner = input.Afterburner && _throttle >= 0.85 && _fuel > 0;
@@ -242,13 +239,19 @@ public sealed class FlightSimulation : IFlightSession
             thrust += _throttle * boost * Smooth(100, 235, speed);
         }
 
+        UpdateAttitude(dt, input, speed, authority, alpha, sideslip, right, fast, pressureArea, thrust);
+        right = FlightVec.Cross(_up, _forward).Unit(right);
+        forwardSpeed = FlightVec.Dot(_velocity, _forward);
+        alpha = Math.Atan2(-FlightVec.Dot(_velocity, _up), Math.Max(1, forwardSpeed));
+        sideslip = Math.Atan2(FlightVec.Dot(_velocity, right), Math.Max(12, forwardSpeed));
+
         // Angle-dependent airfoil lift falls away beyond the authored stall angle. The
         // direction is perpendicular to velocity, so banking redirects lift into a turn.
-        var stallLoss = Math.Clamp((Math.Abs(alpha) - 0.29) * 2.8, 0, 0.9);
-        var liftCoefficient = Math.Clamp(0.24 + 4.7 * alpha, -1.45, 1.7) * (1 - stallLoss);
+        var stallLoss = StallLoss(alpha);
+        var liftCoefficient = AttachedLiftCoefficient(alpha) * (1 - stallLoss);
         var direction = _velocity.Unit(_forward);
         var liftDirection = (_up - direction * FlightVec.Dot(_up, direction)).Unit(_up);
-        var liftAcceleration = Math.Clamp(pressureArea * liftCoefficient / Mass, -8.5 * Gravity, 8.5 * Gravity);
+        var liftAcceleration = LiftAcceleration(pressureArea, liftCoefficient);
         var dragCoefficient = 0.024 + 0.065 * liftCoefficient * liftCoefficient +
                               (_gearDown ? 0.034 : 0) + (input.Brake ? 0.16 : 0) +
                               0.19 * stallLoss;
@@ -261,7 +264,7 @@ public sealed class FlightSimulation : IFlightSession
         }
         dragCoefficient += (1 - fast) * 0.000004 * Math.Pow(Math.Max(0, speed - 260), 2);
         var dragAcceleration = Math.Min(90, pressureArea * dragCoefficient / Mass);
-        var sideAcceleration = Math.Clamp(-sideslip * pressureArea * 0.75 / Mass, -18, 18);
+        var sideAcceleration = SideAcceleration(sideslip, pressureArea);
         var properAcceleration = _forward * thrust + liftDirection * liftAcceleration -
                                  direction * dragAcceleration + right * sideAcceleration;
         var acceleration = properAcceleration - FlightVec.Up * Gravity;
@@ -328,7 +331,7 @@ public sealed class FlightSimulation : IFlightSession
 
     private void UpdateAttitude(
         double dt, FlightInput input, double speed, double authority,
-        double alpha, double sideslip, FlightVec right, double fast, double pressureArea)
+        double alpha, double sideslip, FlightVec right, double fast, double pressureArea, double thrust)
     {
         var response = 1 - Math.Exp(-dt / 0.18);
         if (_onGround)
@@ -358,15 +361,57 @@ public sealed class FlightSimulation : IFlightSession
             var liftUp = Math.Clamp(_up.Y, 0.48, 1);
             var pathRate = input.Pitch * tuning.FastPitchAuthority - pathAngle * 0.14 * (1 - Math.Abs(input.Pitch));
             var targetLift = Math.Clamp((Gravity * Math.Cos(pathAngle) + speed * pathRate) / liftUp, -3 * Gravity, 7 * Gravity);
-            var targetAlpha = (targetLift * Mass / pressureArea - 0.24) / 4.7;
-            var lift = Math.Clamp(pressureArea * Math.Clamp(0.24 + 4.7 * alpha, -1.45, 1.7) / Mass, -8.5 * Gravity, 8.5 * Gravity);
+            var targetAlpha = (targetLift * Mass / pressureArea - ZeroAngleLift) / LiftSlope;
+            var lift = LiftAcceleration(pressureArea, AttachedLiftCoefficient(alpha));
             var currentPathRate = (lift * liftUp - Gravity * Math.Cos(pathAngle)) / speed;
             var speedPitch = Math.Clamp(currentPathRate + 2.8 * (targetAlpha - alpha), -.55, .55);
             targetPitch += (speedPitch - targetPitch) * fast;
             targetYaw *= 1 - 0.5 * fast;
             rollAuthority -= tuning.FastRollReduction * fast;
         }
-        _rollRate += (input.Roll * rollAuthority * authority - _rollRate) * response;
+        var targetRoll = input.Roll * rollAuthority;
+        if (input.Assisted)
+        {
+            var bank = RenderRoll();
+            var usableLoad = pressureArea * AttachedLiftCoefficient(AssistedTrimAngleLimit) / (Mass * Gravity);
+            var maximumBank = _worldJet ? 1.05 - 0.40 * Smooth(270, 460, speed) : 1.01;
+            var bankLimit = 0.25 + (maximumBank - 0.25) * Smooth(0.95, 2.15, usableLoad);
+            // The input is positive-right; the rendered bank angle is negative-right.
+            targetRoll = Math.Clamp(3.0 * Math.IEEERemainder(bank + input.Roll * bankLimit, Math.Tau),
+                -rollAuthority, rollAuthority);
+
+            var direction = _velocity.Unit(_forward);
+            var liftDirection = (_up - direction * FlightVec.Dot(_up, direction)).Unit(_up);
+            var liftUp = liftDirection.Y;
+            var bankBlend = Smooth(0.04, 0.40, Math.Abs(bank));
+            var trim = Smooth(0.30, 0.48, liftUp) * Smooth(0.95, 1.55, usableLoad) *
+                       (1 - Smooth(0.21, 0.30, Math.Abs(alpha)));
+            if (trim > 0)
+            {
+                // Trim the wing against its actual tilt and flight path, never a target altitude.
+                var pathAngle = Math.Asin(Math.Clamp(direction.Y, -1, 1));
+                var vertical = FlightVec.Up - direction * direction.Y;
+                var pathAcceleration = _forward * thrust + right * SideAcceleration(sideslip, pressureArea) - FlightVec.Up * Gravity;
+                var damping = 0.24 * speed * pathAngle * vertical.Length;
+                var liftTarget = Math.Clamp((-FlightVec.Dot(pathAcceleration, vertical) - damping) / liftUp, 0, 2.2 * Gravity);
+                var alphaTarget = Math.Min((liftTarget * Mass / pressureArea - ZeroAngleLift) / LiftSlope, AssistedTrimAngleLimit);
+                var lift = LiftAcceleration(pressureArea, AttachedLiftCoefficient(alpha) * (1 - StallLoss(alpha)));
+                pathAcceleration += liftDirection * lift; // Drag is parallel to velocity, so it cannot change the path direction.
+                var normalRate = FlightVec.Dot(pathAcceleration, liftDirection) / speed;
+                var pitchControl = input.Pitch * (0.72 * authority * (1 - fast) + tuning.FastPitchAuthority * fast / liftUp);
+                var trimmedPitch = Math.Clamp(normalRate + 2.8 * (alphaTarget - alpha) + pitchControl, -0.55, 0.55);
+                // With gear down and wings near level, leave the slow approach and flare to the pilot.
+                var approachTrim = _gearDown ? Smooth(90, 105, speed) : 1;
+                var pitchBlend = (bankBlend + (1 - bankBlend) * approachTrim) * trim * (1 - Math.Abs(input.Pitch));
+                targetPitch += (trimmedPitch - targetPitch) * pitchBlend;
+
+                // Follow the turn the aerodynamic forces are already making, leaving rudder independent.
+                var pathRight = FlightVec.Cross(FlightVec.Up, direction);
+                var turnRate = FlightVec.Dot(pathAcceleration, pathRight) / Math.Max(45, speed * pathRight.LengthSquared);
+                targetYaw += Math.Clamp(turnRate * _up.Y, -0.18, 0.18) * 0.96 * trim * bankBlend * (1 - Math.Abs(input.Yaw));
+            }
+        }
+        _rollRate += (targetRoll * authority - _rollRate) * response;
         _pitchRate += (targetPitch - _pitchRate) * response;
         _yawRate += (targetYaw - _yawRate) * response;
         var omega = right * -_pitchRate + _up * _yawRate + _forward * -_rollRate;
@@ -533,6 +578,18 @@ public sealed class FlightSimulation : IFlightSession
 
     private static double SpeedOfSound(double altitude) =>
         Math.Sqrt(401.87 * (288.15 - .0065 * Math.Clamp(altitude, 0, 11000)));
+
+    private static double AttachedLiftCoefficient(double alpha) =>
+        Math.Clamp(ZeroAngleLift + LiftSlope * alpha, -1.45, 1.7);
+
+    private static double StallLoss(double alpha) =>
+        Math.Clamp((Math.Abs(alpha) - 0.29) * 2.8, 0, 0.9);
+
+    private static double LiftAcceleration(double pressureArea, double coefficient) =>
+        Math.Clamp(pressureArea * coefficient / Mass, -8.5 * Gravity, 8.5 * Gravity);
+
+    private static double SideAcceleration(double sideslip, double pressureArea) =>
+        Math.Clamp(-sideslip * pressureArea * 0.75 / Mass, -18, 18);
 
     private static double Smooth(double lower, double upper, double value)
     {
