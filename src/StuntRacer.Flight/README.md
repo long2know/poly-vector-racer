@@ -118,6 +118,15 @@ Manual and afterburner burn remain unchanged, and engagement never refuels.
 plus an allowance for initial climb and turning, not a guaranteed reserve.
 `Aircraft.Fuel` remains the authoritative tank level.
 
+`playEtaSeconds` estimates real play time to the 5 km capture, not simulated
+flight time. It uses projected distance and current horizontal closing speed
+(capped at the commanded speed), at `effectiveRate` until the 25 km approach
+and at 1× thereafter. It includes a stable, forward 1× approach but omits
+unstable acquisition and turns, unsafe terrain/attitude, low fuel or a low
+projected reserve, polar captures, and wall frames that discarded elapsed time
+at the outer frame limit. Off, hold, paused, and arrived states have no ETA.
+The estimate assumes the current pace and rate; it is not a guaranteed time.
+
 ### Flight and commands
 
 - `start`: ready → three-second countdown → flying, initially on the runway.
@@ -173,7 +182,15 @@ turns, stall/descent, actual gear-down approach/flare/braking versus hard/gear-u
 water impacts, full attitude maneuvers, fixed-step schedules and lifecycle.
 Atlas autopilot checks cover command validation, early climb compression,
 fixed-step equivalence, takeover, fuel, streamed terrain bounds, capture and
-polar/date-line navigation.
+polar/date-line navigation. The play-time estimate checks include a frame-budget
+cap and the 1× approach; two scenic departures fly to capture at 1× and 10×
+requested rates. To verify their actual low-altitude origins and captures with
+the shipped coarse fallback:
+
+```sh
+dotnet run -c Release --project tests/StuntRacer.FlightChecks -- \
+  --atlas-scenic artifacts/world-atlas/base.zip
+```
 
 The opt-in endurance check verifies early compression on the JFK and Haneda
 voyage starts and flies NYC–London in both directions, Tokyo–San

@@ -1747,7 +1747,7 @@ try {
   if (!focus || focus === 'geographic-flight') await verifyGeographicFlight();
   if (!focus || focus === 'flight-training') await verifyFlightTraining();
   if (atlasPilotFocus) evidence.atlasAutopilot = await verifyAtlasAutopilot({
-    evaluate, observe, waitFor, click, select, tap, key, setPhone: setFlightPhone, screenshot,
+    evaluate, observe, waitFor, click, touchTap, select, tap, key, setPhone: setFlightPhone, screenshot,
   });
   if (flightTurnsFocus) evidence.flightTurns = await verifyFlightTurns({
     evaluate, observe, waitFor, click, select, tap, key, setPhone: setFlightPhone, virtualPad, flightInput, screenshot,

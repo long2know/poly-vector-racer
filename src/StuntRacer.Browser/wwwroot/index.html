@@ -214,9 +214,10 @@
 
     <section id="atlas-ap" class="atlas-ap atlas-only" aria-label="Atlas flight plan and autopilot" hidden>
       <div class="atlas-ap-dock">
-        <div class="atlas-ap-summary" role="status">
+        <div class="atlas-ap-summary">
           <strong id="atlas-ap-status">AP Off</strong>
-          <span id="atlas-ap-reason"></span>
+          <span id="atlas-ap-reason" role="status"></span>
+          <span id="atlas-ap-eta" hidden></span>
         </div>
         <button id="atlas-ap-button" type="button" aria-controls="atlas-ap-panel" aria-expanded="false">Flight plan</button>
         <button id="atlas-ap-take-control" type="button" disabled>Take control</button>
@@ -229,11 +230,7 @@
           </select>
         </label>
         <label id="atlas-ap-route" for="atlas-ap-destination">Destination
-          <select id="atlas-ap-destination">
-            <option value="atlantic">London / Heathrow (Atlantic)</option>
-            <option value="pacific">San Francisco / SFO (Pacific)</option>
-            <option value="custom">Custom coordinates</option>
-          </select>
+          <select id="atlas-ap-destination"></select>
         </label>
         <fieldset id="atlas-ap-coordinates" class="atlas-ap-fields" aria-label="Destination coordinates" hidden disabled>
           <label for="atlas-ap-lon">Longitude °<input id="atlas-ap-lon" type="number" min="-180" max="180" step="any" required></label>
@@ -257,7 +254,8 @@
         </div>
         <p id="atlas-ap-error" role="alert" hidden></p>
         <p id="atlas-ap-fuel" hidden></p>
-        <p>Select a rate and Engage AP. Compression starts in a stable, terrain-clear climb or cruise. You can take over at any time. Game fuel endurance is adjusted; no auto-landing.</p>
+        <p>Select a rate and Engage AP. Compression starts in a stable, terrain-clear climb or cruise. Take over at any time; no auto-landing.</p>
+        <p>Play ETA estimates real time to the 5 km capture using current progress and the effective rate, with the final approach at 1×.</p>
       </form>
     </section>
 
@@ -393,8 +391,8 @@
       </div>
       <div class="atlas-only">
         <h3>WORLD FLIGHT ATLAS</h3>
-        <p class="small">In the Garage, choose a preset or enter signed longitude (west is negative), latitude (south is negative) and a heading. Set the departure, then start flight.</p>
-        <p class="small">Once airborne, open Flight plan for GPS, heading hold and time compression. Take control or move a flight control to disengage. Autopilot never lands the plane.</p>
+        <p class="small">In the Garage, choose a preset or enter signed longitude (west is negative), latitude (south is negative) and a heading. Scenic flights air-start low with a GPS target preselected. Fly manually to stay low, or open Flight plan and choose Engage AP for the normal safety climb.</p>
+        <p class="small">Play ETA shows estimated real time, not the flight clock. It can change with speed and the effective rate. No ETA during unsafe or unstable flight, with low fuel, on polar routes or when paused. Take control or move a flight control to disengage. Autopilot never lands the plane.</p>
         <p class="small">The whole globe uses measured elevation and water data. Optional regional detail loads as you fly. Airport labels are landmarks, not modeled runways. For play, not navigation.</p>
       </div>
     </div>
