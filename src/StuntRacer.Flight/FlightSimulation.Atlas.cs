@@ -10,10 +10,14 @@ public sealed partial class FlightSimulation
     private const double AtlasApproachDistance = 25_000;
     private const double AtlasPolarBuffer = 40_000;
     private const double AtlasLowFuel = 0.025;
+    private const int AtlasAcceleratedStepBudget = 60;
+    private const double AtlasLocalClearance = 850;
+    private const double AtlasTerrainBuffer = 450;
     // Cruise is an explicit game endurance setting, not a change to the authored forces.
     private const double AtlasDryFuelScale = 0.01;
     private AtlasPlan? _atlasPlan;
     private int _atlasRequestedRate = 1;
+    private double _atlasAppliedRate = 1;
     private double _atlasLapOffset;
     private string _atlasOffReason = "Autopilot is off.";
 
@@ -102,10 +106,11 @@ public sealed partial class FlightSimulation
         else
         {
             UpdateAtlasArrival(plan);
-            var frameRate = AtlasGuidanceFor(plan).Rate;
+            var terrainCeiling = AtlasFrameTerrainCeiling();
+            var frameRate = AtlasGuidanceFor(plan, terrainCeiling).Rate;
             bool PilotStep(double step)
             {
-                var guidance = AtlasGuidanceFor(plan);
+                var guidance = AtlasGuidanceFor(plan, terrainCeiling);
                 if (frameRate > 1 && guidance.Rate != frameRate)
                     return false;
                 if (!Step(step, controls, guidance))
@@ -115,20 +120,28 @@ public sealed partial class FlightSimulation
             }
 
             if (frameRate == 1)
+            {
+                DropCompressedAtlasTime();
                 _clock.Advance(seconds, PilotStep);
+            }
             else
             {
-                const int acceleratedStepBudget = 60;
-                _clock.Advance(Math.Min(seconds, _clock.MaximumFrameSeconds) * frameRate, acceleratedStepBudget, PilotStep);
+                var wallSeconds = Math.Min(seconds, _clock.MaximumFrameSeconds);
+                _clock.Advance(wallSeconds * frameRate, AtlasAcceleratedStepBudget, PilotStep);
                 // Also discard a fractional tick if the transition happened on this frame's last tick.
                 if (_atlasPlan is null || AtlasGuidanceFor(plan).Rate != frameRate)
+                {
                     _clock.DiscardRemainder();
+                    _atlasAppliedRate = 1;
+                }
+                else if (wallSeconds > 0)
+                    _atlasAppliedRate = Math.Min(frameRate, AtlasAcceleratedStepBudget * _clock.StepSeconds / wallSeconds);
             }
         }
         return CreateSnapshot();
     }
 
-    private AtlasGuidance AtlasGuidanceFor(AtlasPlan plan)
+    private AtlasGuidance AtlasGuidanceFor(AtlasPlan plan, double? terrainCeiling = null)
     {
         var altitude = Math.Max(plan.Altitude, AtlasCruiseFloor);
         var course = GroundCourse();
@@ -170,6 +183,8 @@ public sealed partial class FlightSimulation
         var status = "acquiring";
         string reason;
         var rate = 1;
+        var belowGlobalClearance = _position.Y < WorldAtlasGrid.MaximumElevation + AtlasTerrainBuffer;
+        var terrainAhead = _phase == Phase.Flying && belowGlobalClearance ? AtlasTerrainAhead() : double.NegativeInfinity;
         if (_phase == Phase.Paused)
             reason = "Paused — simulation time is stopped.";
         else if (_phase is Phase.Ready or Phase.Countdown)
@@ -186,18 +201,48 @@ public sealed partial class FlightSimulation
             reason = "Aligning for polar capture at 1×.";
         else if (remaining <= AtlasApproachDistance)
             reason = "Approaching destination at 1×.";
-        else if (Math.Abs(altitude - _position.Y) > 180 || Math.Abs(_velocity.Y) > 7)
-            reason = "Acquiring cruise altitude at 1×.";
-        else if (Math.Abs(_velocity.Length - plan.Speed) > 12 || Math.Abs(error) > 0.09 || Math.Abs(RenderRoll()) > 0.15)
-            reason = "Acquiring cruise speed and course at 1×.";
+        else if (Math.Abs(error) > 0.09 || Math.Abs(RenderRoll()) > 0.15 || Math.Abs(_forward.Y) > 0.34)
+            reason = "Aligning course and leveling the aircraft at 1×.";
         else
         {
-            status = "cruise";
-            reason = "Stable dry cruise.";
-            rate = _atlasRequestedRate;
+            var speed = _velocity.Length;
+            var altitudeError = altitude - _position.Y;
+            var atCruiseAltitude = Math.Abs(altitudeError) <= 180 && Math.Abs(_velocity.Y) <= 7;
+            var cruise = atCruiseAltitude && Math.Abs(speed - plan.Speed) <= 12;
+            var climb = altitudeError > 0 && _velocity.Y is >= 4 and <= 60 &&
+                speed >= Math.Max(170, 0.8 * plan.Speed) && speed <= plan.Speed + 12;
+            if (!cruise && !climb)
+                reason = "Establishing safe climb or cruise speed and altitude at 1×.";
+            else if (belowGlobalClearance &&
+                _position.Y - Math.Max(terrainAhead, terrainCeiling ?? AtlasFrameTerrainCeiling()) < AtlasLocalClearance)
+                reason = "Terrain clearance limits time compression to 1×.";
+            else
+            {
+                status = cruise ? "cruise" : "climbing";
+                reason = cruise ? "Stable dry cruise." : "Stable climb — clear of nearby terrain.";
+                rate = _atlasRequestedRate;
+            }
         }
         if (plan.ArrivalHeading.HasValue) status = "arrived";
-        return new(status, reason, rate, altitude, plan.Speed, heading, error, remaining, polarLimit);
+        return new(status, reason, rate, altitude, plan.Speed, heading, error, remaining, polarLimit, terrainAhead);
+    }
+
+    private double AtlasTerrainAhead()
+    {
+        var terrain = World.AtlasElevation!;
+        var height = terrain.Sample(_position.X, _position.Z).Height;
+        for (var ahead = 10; ahead <= 30; ahead += 10)
+            height = Math.Max(height, terrain.Sample(_position.X + _velocity.X * ahead,
+                _position.Z + _velocity.Z * ahead).Height);
+        return height;
+    }
+
+    private double AtlasFrameTerrainCeiling()
+    {
+        // A compressed frame covers at most 0.5 s at up to 312 m/s. Bound nearby
+        // cells as well as looking ahead so narrow detail ridges cannot slip between probes.
+        return _phase == Phase.Flying && _position.Y < WorldAtlasGrid.MaximumElevation + AtlasTerrainBuffer
+            ? World.AtlasElevation!.MaximumNearby(_position.X, _position.Z, 200) : WorldAtlasGrid.MaximumElevation;
     }
 
     private FlightInput AtlasControls(AtlasGuidance guidance, double speed, double fast,
@@ -207,19 +252,10 @@ public sealed partial class FlightSimulation
         var bankLimit = AssistedBankLimit(speed, liftHeadroom);
         var safeBank = 0.58 * Smooth(100, 160, speed);
         var climbRate = Math.Clamp((guidance.Altitude - _position.Y) * 0.045, -38, 52);
-        if (_position.Y < WorldAtlasGrid.MaximumElevation + 350 && World.AtlasElevation is { } terrain)
+        if (_position.Y < WorldAtlasGrid.MaximumElevation + 350 && _position.Y - guidance.TerrainAhead < AtlasTerrainBuffer)
         {
-            // The climb begins below the global floor. Check the real active surface along
-            // the current velocity and favor wings-level climb if clearance is tightening.
-            var height = terrain.Sample(_position.X, _position.Z).Height;
-            for (var ahead = 10; ahead <= 30; ahead += 10)
-                height = Math.Max(height, terrain.Sample(_position.X + _velocity.X * ahead,
-                    _position.Z + _velocity.Z * ahead).Height);
-            if (_position.Y - height < 450)
-            {
-                climbRate = Math.Max(climbRate, 52);
-                safeBank = Math.Min(safeBank, 0.18);
-            }
+            climbRate = Math.Max(climbRate, 52);
+            safeBank = Math.Min(safeBank, 0.18);
         }
         var bank = Math.Clamp(guidance.HeadingError * 1.65, -safeBank, safeBank);
 
@@ -293,8 +329,9 @@ public sealed partial class FlightSimulation
 
     private void DropCompressedAtlasTime()
     {
-        if (_atlasPlan is { } plan && AtlasGuidanceFor(plan).Rate > 1)
+        if (_atlasAppliedRate > 1)
             _clock.DiscardRemainder();
+        _atlasAppliedRate = 1;
     }
 
     private void DisengageAtlasAutopilot(string reason)
@@ -303,6 +340,7 @@ public sealed partial class FlightSimulation
         _atlasPlan = null;
         _atlasOffReason = reason;
         _clock.DiscardRemainder();
+        _atlasAppliedRate = 1;
     }
 
     private void ResetAtlasAutopilot()
@@ -320,6 +358,9 @@ public sealed partial class FlightSimulation
 
         var guidance = AtlasGuidanceFor(plan);
         var reason = guidance.Reason;
+        var effectiveRate = guidance.Rate > 1 ? _atlasAppliedRate : 1;
+        if (effectiveRate > 1 && effectiveRate < guidance.Rate)
+            reason += " Limited by the per-frame simulation budget.";
         if (plan.Altitude < guidance.Altitude)
             reason += $" Selected altitude raised to {AtlasCruiseFloor:0} m for Atlas terrain clearance.";
         if (guidance.PolarLimit)
@@ -327,7 +368,7 @@ public sealed partial class FlightSimulation
         var heading = guidance.Heading * 180 / Math.PI;
         if (heading < 0) heading += 360;
         return new(guidance.Status, reason, plan.Target is null ? "hold" : "route",
-            _atlasRequestedRate, guidance.Rate, plan.Target, guidance.Remaining,
+            _atlasRequestedRate, effectiveRate, plan.Target, guidance.Remaining,
             _phase == Phase.Flying ? AtlasDryFuelScale : 1, guidance.Speed, guidance.Altitude, heading)
         {
             ProjectedFuel = EstimateAtlasFuelAtArrival(plan, guidance)
@@ -372,5 +413,5 @@ public sealed partial class FlightSimulation
     }
 
     private readonly record struct AtlasGuidance(string Status, string Reason, int Rate, double Altitude, double Speed,
-        double Heading, double HeadingError, double? Remaining, bool PolarLimit);
+        double Heading, double HeadingError, double? Remaining, bool PolarLimit, double TerrainAhead);
 }

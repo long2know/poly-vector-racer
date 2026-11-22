@@ -101,8 +101,7 @@ public sealed partial class FlightSimulation : IFlightSession
             case "pause":
                 if (_phase is Phase.Flying or Phase.Countdown)
                 {
-                    if (_atlasPlan is { } plan && AtlasGuidanceFor(plan).Rate > 1)
-                        _clock.DiscardRemainder();
+                    DropCompressedAtlasTime();
                     _resumePhase = _phase;
                     _resumeMessage = _message;
                     _phase = Phase.Paused;

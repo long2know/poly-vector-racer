@@ -8,6 +8,7 @@ const pilot = `${state}.flight.atlasAutopilot`;
 const aircraft = `${state}.flight.aircraft`;
 const ready = `${diag}.selectedTrack === 'flight:atlas' && ${state}.phase === 'ready'`;
 const flying = `${state}.phase === 'racing'`;
+const flightSample = `({ flight: ${state}.flight, now: performance.now() })`;
 
 export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, select, tap, key, setPhone, screenshot }) {
   assert.ok(await evaluate(`${diag}.worldAtlasConfigurationAvailable`), 'Atlas needs mounted geography for this scenario');
@@ -38,20 +39,47 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
     })()`);
   }
 
+  async function measureFlight(milliseconds = 900) {
+    const { flight: before, now: started } = await evaluate(flightSample);
+    await sleep(milliseconds);
+    const { flight: after, now: ended } = await evaluate(flightSample);
+    const wall = (ended - started) / 1000;
+    const acceleration = (after.time - before.time) / wall;
+    const traveled = Math.hypot(wrapAtlasX(after.aircraft.x - before.aircraft.x), after.aircraft.z - before.aircraft.z);
+    const gpsProgress = before.atlasAutopilot.remainingM - after.atlasAutopilot.remainingM;
+    return { before, after, started, wall, acceleration, traveled, gpsProgress };
+  }
+
   async function startVoyage(id) {
     const origin = await departure(id);
+    assert.equal(await evaluate(`${diag}.worldAircraft.id`), 'f18');
     await start();
     await showPlan();
     assert.equal(await evaluate("document.getElementById('atlas-ap-destination').value"), id);
     await select('atlas-ap-rate', '10');
+    const engagedAt = await evaluate('performance.now()');
     await click('atlas-ap-engage');
     await waitFor(`${flying} && ${pilot}.status !== 'off'`);
-    const plan = (await observe()).flight.atlasAutopilot;
+    const launch = (await observe()).flight;
+    const plan = launch.atlasAutopilot;
     assert.equal(plan.mode, 'route');
     assert.equal(plan.requestedRate, 10);
+    assert.equal(plan.effectiveRate, 1, 'The low-altitude departure is still acquiring a safe climb');
+    assert.ok(launch.aircraft.y < 2500, 'Use the actual low-altitude unscripted departure');
     assert.ok(plan.remainingM > 7_000_000, `${id} has a full ocean-length route, not a local shortcut`);
     assert.ok(plan.fuelRateScale > 0 && plan.fuelRateScale < .1, 'Atlas endurance is represented explicitly');
-    return { origin, plan };
+    await waitFor(`${flying} && ${pilot}.status === 'climbing' && ${pilot}.effectiveRate === 10`, 29000);
+    const early = await measureFlight();
+    const activationSeconds = (early.started - engagedAt) / 1000;
+    assert.ok(activationSeconds < 30 && early.before.aircraft.y < 6000 && early.after.aircraft.y > early.before.aircraft.y,
+      `${id} accelerates in a real climb within 30 wall seconds (${activationSeconds.toFixed(2)} s)`);
+    assert.ok(early.acceleration > 7 && early.acceleration < 11,
+      `${id} advances the flight clock faster before cruise, measured ${early.acceleration}`);
+    assert.ok(early.traveled > 1000 && early.traveled < 3700 && Math.abs(early.gpsProgress - early.traveled) < 30 &&
+      early.after.aircraft.fuel < early.before.aircraft.fuel && early.after.crashes === 0,
+      `${id} makes reachable GPS and aircraft progress (${early.gpsProgress.toFixed(1)} m) before cruise`);
+    assert.match(await evaluate("document.getElementById('atlas-ap-status').textContent"), /Climbing GPS · 10× requested/);
+    return { origin, plan, early: { ...early, activationSeconds } };
   }
 
   async function returnToGarage() {
@@ -68,6 +96,18 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
   const pacific = await startVoyage('pacific');
   assert.ok(pacific.origin.lon > 130 && pacific.plan.target.x > atlasGrid.halfWidth,
     'Tokyo to San Francisco is routed east across the date line, not around the other way');
+  await showPlan();
+  pacific.rateChanges = [];
+  for (const rate of [5, 2, 10]) {
+    await select('atlas-ap-rate', String(rate));
+    await waitFor(`${pilot}.requestedRate === ${rate} && ${pilot}.effectiveRate === ${rate}`, 3000);
+    const change = await measureFlight(500);
+    assert.ok(change.acceleration > rate * .7 && change.acceleration < rate * 1.15,
+      `Changing the selector applies ${rate}× without re-engaging (measured ${change.acceleration})`);
+    assert.deepEqual(change.after.atlasAutopilot.target, pacific.plan.target, 'Rate changes preserve the same GPS target');
+    assert.ok(change.gpsProgress > 0 && change.after.atlasAutopilot.status === 'climbing');
+    pacific.rateChanges.push({ requested: rate, measured: change.acceleration, gpsProgress: change.gpsProgress });
+  }
   await returnToGarage();
 
   await inputValues({ 'atlas-lon': 179.85, 'atlas-lat': 39, 'atlas-heading': 90 });
@@ -80,15 +120,9 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
   await inputValues({ 'atlas-ap-lon': -178, 'atlas-ap-lat': 39, 'atlas-ap-altitude': 10500, 'atlas-ap-speed': 250 });
   await select('atlas-ap-rate', '10');
   await click('atlas-ap-engage');
-  await waitFor(`${flying} && ${pilot}.effectiveRate === 10`, 420000);
+  await waitFor(`${flying} && ${pilot}.status === 'cruise' && ${pilot}.effectiveRate === 10`, 90000);
 
-  const before = (await observe()).flight;
-  const wallStart = await evaluate('performance.now()');
-  await sleep(900);
-  const after = (await observe()).flight;
-  const wall = (await evaluate('performance.now()') - wallStart) / 1000;
-  const acceleration = (after.time - before.time) / wall;
-  const traveled = Math.hypot(wrapAtlasX(after.aircraft.x - before.aircraft.x), after.aircraft.z - before.aircraft.z);
+  const { before, after, acceleration, traveled } = await measureFlight();
   assert.ok(acceleration > 7 && acceleration < 11, `10× cruise advances simulated time, measured ${acceleration}`);
   assert.ok(traveled > 1000 && traveled < 3700 && after.aircraft.fuel < before.aircraft.fuel,
     'Time compression moves the actual jet and consumes fuel without teleporting');
