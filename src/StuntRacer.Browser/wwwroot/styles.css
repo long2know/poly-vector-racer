@@ -418,6 +418,7 @@ body[data-touch="on"] #flight-view-controls button { min-height: 44px; }
 .atlas-ap-summary { grid-column: 1 / -1; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .atlas-ap-summary strong, .atlas-ap-summary span { display: block; }
 .atlas-ap-summary span { color: #c3dbc8; margin-top: 2px; }
+#atlas-ap-eta { color: #f4dfa6; font-weight: bold; }
 .atlas-ap[data-status="off"] .atlas-ap-dock { border-left-color: #85a79799; }
 .atlas-ap button, .atlas-ap :is(input, select) {
   min-width: 0; min-height: 32px; border: 1px solid #91aa9c99; border-radius: 2px;

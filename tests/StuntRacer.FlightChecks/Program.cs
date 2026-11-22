@@ -1,21 +1,22 @@
 using StuntRacer.FlightChecks;
 
-if (args is ["--atlas-endurance", var baseArchive])
+if (args is [var atlasCheck, var baseArchive] && atlasCheck is "--atlas-endurance" or "--atlas-scenic")
 {
     try
     {
-        AtlasAutopilotChecks.ActualAtlas(baseArchive);
+        if (atlasCheck == "--atlas-scenic") AtlasAutopilotChecks.ActualScenicDepartures(baseArchive);
+        else AtlasAutopilotChecks.ActualAtlas(baseArchive);
         return 0;
     }
     catch (Exception exception)
     {
-        Console.Error.WriteLine($"FAIL Atlas endurance: {exception.Message}");
+        Console.Error.WriteLine($"FAIL {atlasCheck}: {exception.Message}");
         return 1;
     }
 }
-if (args.Contains("--atlas-endurance", StringComparer.Ordinal))
+if (args.Any(arg => arg is "--atlas-endurance" or "--atlas-scenic"))
 {
-    Console.Error.WriteLine("Usage: --atlas-endurance /path/to/base.zip-or-extracted-base.bin");
+    Console.Error.WriteLine("Usage: --atlas-endurance or --atlas-scenic /path/to/base.zip-or-extracted-base.bin");
     return 1;
 }
 
@@ -58,6 +59,8 @@ if (args.Contains("--atlas-endurance", StringComparer.Ordinal))
     ("atlas autopilot keeps climbing turns, nearby detail and landing gear at 1x", AtlasAutopilotChecks.ClimbSafety),
     ("atlas autopilot low fuel limits compression, no manual fuel bonus", AtlasAutopilotChecks.LowFuel),
     ("atlas autopilot date-line route, 1x capture and onward flight", AtlasAutopilotChecks.CaptureAndDateLine),
+    ("atlas autopilot play-time ETA uses applied rate and safe approach", AtlasAutopilotChecks.PlayTimeEstimate),
+    ("atlas scenic departures fly actual short GPS legs", AtlasAutopilotChecks.ScenicDepartures),
     ("atlas autopilot polar hold remains tangent to bounded world", AtlasAutopilotChecks.PolarHold),
     ("atlas autopilot approach captures near each pole and continues safely", AtlasAutopilotChecks.PolarRoute)
 ];

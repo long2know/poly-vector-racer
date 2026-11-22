@@ -132,6 +132,14 @@ choose any aircraft and start the flight. Those departures preselect London
 Heathrow or San Francisco SFO in the cockpit. The routes work with Atlas
 base terrain alone; regional scenery is optional.
 
+For a short trip, choose **Scenic flights** in the same **Departure** list:
+**California Coast** (Half Moon Bay to Golden Gate, 40 projected km) or
+**Oʻahu South Shore** (Kalaeloa to Makapuʻu, 49 projected km). These one-way air
+starts point along the coast. Fly manually to stay low for sightseeing, or use
+the preselected destination in **Flight plan**. The GPS pilot only takes over
+when you select **Engage AP**, and uses the normal climb for terrain clearance.
+With the default jet at **1×**, either GPS leg takes about 2½–3 minutes to capture.
+
 Open **Flight plan**, keep the preset or select **Custom coordinates**
 (longitude −180° to 180°, latitude −90° to 90°; west and south are negative).
 You can change the GPS target in flight without restarting or changing
@@ -153,10 +161,18 @@ stored throttle setting. On phones the panel scrolls; the touch flight
 controls remain available. **Esc** closes the panel and returns keyboard
 focus to the flight view.
 
-The panel estimates game fuel on arrival for an active GPS route. Atlas
-navigation, cruise fuel and endurance are game rules, not real-world planning
-data. Arrival means the autopilot holds an airborne course at **1×**. It never
-auto-lands; airport markers are not modeled runways.
+The GPS dock's **Play ETA** is estimated real time, not the cockpit flight
+clock. It uses current forward progress and the effective rate, allowing for
+**1×** from 25 km out to the 5 km capture radius. Even at a fully applied **10×**
+and 250 m/s, the ocean voyages take about 56 minutes (Atlantic) and 73 minutes
+(Pacific), before allowing for acquisition or slowdowns. The estimate changes
+with speed and available compression and is unavailable during acquisition,
+turning, unsafe flight, pauses, insufficient fuel, or polar routing. There is
+no ETA in heading hold. The panel also estimates game fuel on arrival.
+
+Atlas navigation and endurance are for play, not real-world planning. Arrival
+means the autopilot holds an airborne course at **1×**. It never auto-lands;
+airport markers are not modeled runways.
 
 **Seattle Scenic Drive** is separate from World Flight and Meridian City. It
 uses the same optional World Flight ZIP, including its Seattle OpenStreetMap
@@ -652,6 +668,9 @@ at the Cascades departure without preceding mobile or sightseeing scenes.
 `STUNT_BROWSER_FOCUS=flight-turns` uses the hosted Atlas to check that keyboard,
 touch and gamepad reverse the actual flight path and level off in Assisted,
 and that Direct still allows a full roll.
+`STUNT_BROWSER_FOCUS=atlas-autopilot` checks the hosted Atlas voyage and custom
+routes, applied compression, and the California Coast scenic leg from touch
+launch and opt-in engagement through the **1×** arrival.
 `STUNT_BROWSER_FOCUS=seattle-drive` checks the real ZIP's street map, scenery,
 sidewalk activity, GPS arrival, pause, replanning and keyboard takeover in Chrome. The related
 `seattle-drive-legacy` and `seattle-drive-no-package` focuses check unavailable

@@ -88,6 +88,9 @@ public sealed record AtlasAutopilotSnapshot(
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? ProjectedFuel { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? PlayEtaSeconds { get; init; }
 }
 
 public sealed record FlightSnapshot(

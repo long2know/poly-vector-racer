@@ -12,6 +12,7 @@ import { FlightLandmarkLabels } from './flight-landmark-labels.js';
 import { DuelFlightScene, TrainingFlightScene } from './training-flight-scene.js';
 import { readWorldCatalog, WorldTerrain } from './world-terrain.js';
 import { atlasCoordinates, readAtlasBase, readAtlasCatalog, WorldAtlasTerrain, wrapAtlasX } from './world-atlas.js';
+import { atlasRoutes, atlasRouteForDeparture, atlasRouteDeparture, formatAtlasPlayEta } from './atlas-flight-plan.js';
 import { CityScene } from './city-scene.js';
 import { ArcadeYardScene } from './arcade-yard-scene.js';
 
@@ -36,6 +37,7 @@ let originalFlightPackageText = null;
 let worldCatalog, selectedDeparture = 'boeing';
 let atlasData, selectedAtlasDeparture, selectedAtlasPreset;
 let atlasFlight = false;
+let atlasEtaKey, nextAtlasEtaUpdate = 0;
 let worldAircraftProfiles = [], selectedAircraft = 'f18', worldAircraft = null, mapRoads = false;
 let seattleDriveUnavailable = 'No World Flight terrain package is configured.';
 let displayedDrivePlan, displayedDriveRevision;
@@ -73,14 +75,7 @@ const flightModeChoices = {
   'flight-world': 'flight:world',
   'flight-atlas': 'flight:atlas',
 };
-const atlasVoyages = {
-  atlantic: { name: 'Atlantic / New York to London', origin: { name: 'New York / JFK', lon: -73.7781, lat: 40.6413 },
-    destination: { lonDeg: -0.4543, latDeg: 51.47 } },
-  pacific: { name: 'Pacific / Tokyo to San Francisco', origin: { name: 'Tokyo / Haneda', lon: 139.7798, lat: 35.5494 },
-    destination: { lonDeg: -122.379, latDeg: 37.6213 } },
-};
 const atlasPilotLabels = { off: 'Off', acquiring: 'Acquiring', climbing: 'Climbing', cruise: 'Cruise', arrived: 'Arrived' };
-const atlasVoyageId = preset => preset?.startsWith('voyage-') ? preset.slice('voyage-'.length) : '';
 const atlasCourse = degrees => `${String((Math.round(degrees) + 360) % 360).padStart(3, '0')}°`;
 const hasScanner = flight => Boolean(flight?.training || flight?.duel);
 
@@ -497,8 +492,20 @@ function updateAtlasPilot(pilot, aircraft) {
   }
   const mode = status === 'off' ? '' : pilot.mode === 'hold' ? ' Hold' : ' GPS';
   const effective = Number((pilot?.effectiveRate ?? 1).toFixed(1));
-  text('atlas-ap-status', `AP ${atlasPilotLabels[status]}${mode} · ${pilot?.requestedRate ?? 1}× requested / ${effective}× effective`);
+  // Only a stable final approach publishes an ETA in the native acquiring state.
+  const label = status === 'acquiring' && pilot.playEtaSeconds != null ? 'Approach' : atlasPilotLabels[status];
+  text('atlas-ap-status', `AP ${label}${mode} · ${pilot?.requestedRate ?? 1}× requested / ${effective}× effective`);
   text('atlas-ap-reason', pilot?.reason ?? '');
+  const etaKey = pilot?.mode === 'route'
+    ? `${status}/${pilot.target?.x}/${pilot.target?.z}/${pilot.requestedRate}/${pilot.playEtaSeconds != null}` : '';
+  const now = performance.now();
+  if (etaKey !== atlasEtaKey || now >= nextAtlasEtaUpdate) {
+    const estimate = formatAtlasPlayEta(pilot);
+    $('atlas-ap-eta').hidden = !estimate;
+    text('atlas-ap-eta', estimate);
+    atlasEtaKey = etaKey;
+    nextAtlasEtaUpdate = now + 1000;
+  }
   const fuel = $('atlas-ap-fuel');
   const fuelEstimate = Number.isFinite(pilot?.projectedFuel);
   if (fuel.hidden === fuelEstimate) fuel.hidden = !fuelEstimate;
@@ -531,8 +538,8 @@ function updateAtlasPlanFields() {
 
 function resetAtlasPlan() {
   $('atlas-ap-panel').reset();
-  const voyage = atlasVoyageId(selectedAtlasPreset);
-  if (voyage) $('atlas-ap-destination').value = voyage;
+  const route = atlasRouteForDeparture(selectedAtlasPreset);
+  if (route) $('atlas-ap-destination').value = route.id;
   updateAtlasPlanFields();
 }
 
@@ -981,7 +988,7 @@ function updateModeLabels() {
   text('circuit-laps', flying || city || drive || arcade || mode === 'stunts' ? '--' : ['checkpoint-run', 'hard-driving'].includes(mode) ? '1' : '3');
   text('track-length-unit', drive ? 'EXPLORATION AREA' : world || atlas ? 'TERRAIN COVERAGE' : duel || training ? 'SCAN RANGE'
     : flying ? 'FLIGHT' : arcade ? 'ROUND' : city ? 'CITY' : 'METRES');
-  text('menu-intro', atlas ? 'Choose a preset or set any longitude and latitude. Regional detail streams where installed; global terrain is always available.'
+  text('menu-intro', atlas ? 'Choose a departure, including short Scenic flights, or set your own coordinates. Regional detail streams where installed; global terrain is always available.'
     : world ? worldAircraft.id === 'sr71'
       ? 'For an SR-71 speed run, choose Cascades high-altitude cruise. Set full throttle, then hold Space or BURN for afterburner.'
       : 'Fly the U.S. in polygons. Explore Seattle, the Golden Gate, Yosemite and Grand Canyon, or go supersonic over the Cascades.'
@@ -991,7 +998,7 @@ function updateModeLabels() {
     : 'A ribbon of tarmac. A very long way down. Find your line. Save your boost. Stick the landing.');
   $('menu-title').innerHTML = special?.title ?? (duel ? duelMode.title : world || atlas ? 'WIDE<br><em>OPEN.</em>' : training ? 'SCAN.<br><em>TAG.</em>'
     : flying ? 'LEAVE<br>THE<br><em>ROAD.</em>' : 'DRIVE<br>ABOVE<br><em>IT ALL.</em>');
-  text('mode-description', atlas ? 'Fly continuously around the world with real elevation. Every departure starts airborne.'
+  text('mode-description', atlas ? 'Every departure starts airborne. Scenic flights start low for manual sightseeing and preselect an optional GPS target. Engaging AP climbs for clearance.'
     : world ? 'Stream real U.S. terrain. For Mach flight, raise throttle to full, retract the gear and hold Space.'
     : training ? 'Two practice props. One airborne start. Keep near the initial heading on your first pass, and scan when in range.'
     : duel ? 'One moving glider. Three scored passes. When SCAN lights up, tag it and keep flying.'
@@ -1237,13 +1244,22 @@ async function loadWorldFlight(departure, aircraftId = selectedAircraft) {
   return { ...track, terrain };
 }
 
-function populateAtlasDepartures() {
+function populateAtlasChoices() {
   const field = $('atlas-departure');
   field.replaceChildren(new Option('Custom coordinates', 'custom'));
-  const voyages = document.createElement('optgroup');
-  voyages.label = 'Cruise voyages';
-  for (const [id, voyage] of Object.entries(atlasVoyages)) voyages.append(new Option(voyage.name, `voyage-${id}`));
-  field.append(voyages);
+  const destinations = $('atlas-ap-destination');
+  destinations.replaceChildren();
+  for (const [label, scenic] of [['Cruise voyages', false], ['Scenic flights', true]]) {
+    const departures = document.createElement('optgroup'), targets = document.createElement('optgroup');
+    departures.label = targets.label = label;
+    for (const route of atlasRoutes.filter(route => Boolean(route.scenic) === scenic)) {
+      departures.append(new Option(route.name, route.departureId));
+      targets.append(new Option(route.destinationName, route.id, route.id === 'atlantic'));
+    }
+    field.append(departures);
+    destinations.append(targets);
+  }
+  destinations.append(new Option('Custom coordinates', 'custom'));
   const groups = new Map();
   for (const preset of atlasData.catalog.presets) {
     const pack = preset.key.split('/')[0];
@@ -1260,11 +1276,11 @@ function populateAtlasDepartures() {
   $('atlas-lat').value = selectedAtlasDeparture.lat;
   const heading = String(Math.round(selectedAtlasDeparture.heading * 180 / Math.PI));
   const headings = $('atlas-heading');
-  headings.querySelector('[data-voyage-heading]')?.remove();
+  headings.querySelector('[data-route-heading]')?.remove();
   headings.value = heading;
   if (headings.selectedIndex === -1) {
     const option = new Option(`${heading}°`, heading, false, true);
-    option.dataset.voyageHeading = '';
+    option.dataset.routeHeading = '';
     headings.append(option);
   }
   const credits = $('atlas-credits'), seen = new Set();
@@ -1296,14 +1312,9 @@ async function loadWorldAtlas(selection, aircraftId = selectedAircraft) {
     : selectedAtlasPreset ?? atlasData.catalog.presets[0]?.key ?? { id: 'coordinates', name: 'Equator', lon: 0, lat: 0, heading: Math.PI / 2 };
   let departure, presetId = 'custom';
   if (typeof selection === 'string') {
-    const voyageId = atlasVoyageId(selection);
-    const voyage = Object.hasOwn(atlasVoyages, voyageId) && atlasVoyages[voyageId];
-    if (voyage) {
-      const { lon, lat } = voyage.origin;
-      const { lonDeg, latDeg } = voyage.destination;
-      const deltaLon = (lonDeg - lon + 540) % 360 - 180;
-      departure = { id: selection, ...voyage.origin, heading: Math.atan2(deltaLon, latDeg - lat) };
-    } else {
+    const route = atlasRouteForDeparture(selection);
+    if (route) departure = atlasRouteDeparture(route);
+    else {
       const preset = atlasData.catalog.presets.find(item => item.key === selection);
       if (!preset) throw new Error('Unknown Atlas departure.');
       const { id, name, lon, lat } = preset;
@@ -1317,7 +1328,7 @@ async function loadWorldAtlas(selection, aircraftId = selectedAircraft) {
   selectedAtlasDeparture = departure;
   selectedAtlasPreset = presetId;
   selectedAircraft = track.aircraft.id;
-  populateAtlasDepartures();
+  populateAtlasChoices();
   const terrain = new WorldAtlasTerrain(atlasData.catalog, atlasData.base, {
     aircraft: () => state?.flight?.aircraft,
     install: (level, x, z, bytes) => api.InstallWorldAtlasTerrain(level, x, z, bytes),
@@ -1664,7 +1675,7 @@ function bind() {
       const key = $('atlas-ap-destination').value;
       command.destination = key === 'custom'
         ? { lonDeg: $('atlas-ap-lon').valueAsNumber, latDeg: $('atlas-ap-lat').valueAsNumber }
-        : atlasVoyages[key]?.destination;
+        : atlasRoutes.find(route => route.id === key)?.destination;
     } else if ($('atlas-ap-heading').value) command.headingDeg = $('atlas-ap-heading').valueAsNumber;
     if (sendAtlasCommand(command)) {
       setAtlasPanelOpen(false);

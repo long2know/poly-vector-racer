@@ -10,26 +10,27 @@ const ready = `${diag}.selectedTrack === 'flight:atlas' && ${state}.phase === 'r
 const flying = `${state}.phase === 'racing'`;
 const flightSample = `({ flight: ${state}.flight, now: performance.now() })`;
 
-export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, select, tap, key, setPhone, screenshot }) {
+export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, touchTap, select, tap, key, setPhone, screenshot }) {
   assert.ok(await evaluate(`${diag}.worldAtlasConfigurationAvailable`), 'Atlas needs mounted geography for this scenario');
   await select('game-mode', 'flight-atlas');
   await waitFor(ready, 60000);
 
-  async function departure(id) {
-    await select('atlas-departure', `voyage-${id}`);
-    await waitFor(`${ready} && ${diag}.worldAtlas.departure.id === 'voyage-${id}'`);
+  async function departure(id, category = 'voyage') {
+    const preset = `${category}-${id}`;
+    await select('atlas-departure', preset);
+    await waitFor(`${ready} && ${diag}.worldAtlas.departure.id === '${preset}'`);
     const { lon, lat } = await evaluate(`${diag}.worldAtlas.departure`);
     assert.ok(Number.isFinite(lon) && Number.isFinite(lat), `${id} must be a real authored departure`);
     return { lon, lat };
   }
 
-  async function start() {
-    await click('start-button');
+  async function start(activate = click) {
+    await activate('start-button');
     await waitFor(`${flying} && document.getElementById('atlas-ap-button').checkVisibility()`, 15000);
   }
 
-  async function showPlan() {
-    await click('atlas-ap-button');
+  async function showPlan(activate = click) {
+    await activate('atlas-ap-button');
     await waitFor("document.getElementById('atlas-ap-panel').checkVisibility()");
   }
 
@@ -65,6 +66,7 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
     assert.equal(plan.mode, 'route');
     assert.equal(plan.requestedRate, 10);
     assert.equal(plan.effectiveRate, 1, 'The low-altitude departure is still acquiring a safe climb');
+    assert.equal(plan.playEtaSeconds, undefined, 'Acquisition is not an arrival prediction');
     assert.ok(launch.aircraft.y < 2500, 'Use the actual low-altitude unscripted departure');
     assert.ok(plan.remainingM > 7_000_000, `${id} has a full ocean-length route, not a local shortcut`);
     assert.ok(plan.fuelRateScale > 0 && plan.fuelRateScale < .1, 'Atlas endurance is represented explicitly');
@@ -78,6 +80,8 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
     assert.ok(early.traveled > 1000 && early.traveled < 3700 && Math.abs(early.gpsProgress - early.traveled) < 30 &&
       early.after.aircraft.fuel < early.before.aircraft.fuel && early.after.crashes === 0,
       `${id} makes reachable GPS and aircraft progress (${early.gpsProgress.toFixed(1)} m) before cruise`);
+    assert.ok(early.after.atlasAutopilot.playEtaSeconds > 3300 && early.after.atlasAutopilot.playEtaSeconds < 6500,
+      `${id} forecasts close to an hour or longer even at 10×`);
     assert.match(await evaluate("document.getElementById('atlas-ap-status').textContent"), /Climbing GPS · 10× requested/);
     return { origin, plan, early: { ...early, activationSeconds } };
   }
@@ -85,6 +89,20 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
   async function returnToGarage() {
     await click('garage-button');
     await waitFor(ready);
+  }
+
+  async function phonePlan() {
+    const layout = await evaluate(`(() => {
+      const f=document.getElementById('atlas-ap-panel').getBoundingClientRect();
+      const b=document.getElementById('atlas-ap-button').getBoundingClientRect();
+      return {left:f.left,right:f.right,top:f.top,bottom:f.bottom,w:innerWidth,h:innerHeight,
+        reach:document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)?.id,
+        etaVisible:document.getElementById('atlas-ap-eta').checkVisibility()};
+    })()`);
+    assert.ok(layout.left >= 0 && layout.right <= layout.w && layout.top >= 0 && layout.bottom <= layout.h,
+      `phone flight plan fits inside the playable viewport: ${JSON.stringify(layout)}`);
+    assert.equal(layout.reach, 'atlas-ap-button');
+    return layout;
   }
 
   const atlantic = await startVoyage('atlantic');
@@ -132,6 +150,7 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
   await tap('KeyP');
   await waitFor(`${state}.phase === 'paused'`);
   const paused = (await observe()).flight;
+  assert.equal(paused.atlasAutopilot.playEtaSeconds, undefined, 'Pause does not show an active ETA');
   await sleep(350);
   assert.deepEqual((await observe()).flight, paused, 'Pause freezes pose, flight time and fuel at 10×');
   await click('resume-button');
@@ -142,6 +161,7 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
   try { await waitFor(`${pilot}.status === 'off' && ${pilot}.effectiveRate === 1`, 3000); }
   finally { await key('KeyD', false); }
   const handoff = (await observe()).flight;
+  assert.equal(handoff.atlasAutopilot.playEtaSeconds, undefined, 'Manual flight has no active GPS ETA');
   assert.ok(handoff.time - manual.time < 1.5 && handoff.recoveries === 0, 'Manual takeover discards accelerated remainder');
   const manualWall = await evaluate('performance.now()');
   await sleep(550);
@@ -150,24 +170,64 @@ export async function verifyAtlasAutopilot({ evaluate, observe, waitFor, click, 
   assert.ok(Math.abs((await observe()).flight.aircraft.throttle - .47) < .12, 'Manual throttle returns to the stored lever');
   await returnToGarage();
 
+  const scenic = { origin: await departure('california-coast', 'scenic') };
+  assert.equal(await evaluate('document.getElementById("atlas-departure").selectedOptions[0].parentElement.label'), 'Scenic flights');
   await setPhone(true);
-  await start();
-  await showPlan();
-  const mobile = await evaluate(`(() => {
-    const f=document.getElementById('atlas-ap-panel').getBoundingClientRect();
-    const b=document.getElementById('atlas-ap-button').getBoundingClientRect();
-    return {left:f.left,right:f.right,top:f.top,bottom:f.bottom,w:innerWidth,h:innerHeight,
-      reach:document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)?.id};
+  await start(touchTap);
+  scenic.manual = (await observe()).flight;
+  assert.ok(scenic.manual.aircraft.y < 2000 && scenic.manual.atlasAutopilot.status === 'off' &&
+    scenic.manual.atlasAutopilot.target == null, 'Scenic departure starts low and manual');
+  await showPlan(touchTap);
+  const preselection = await evaluate(`(() => {
+    const target = document.getElementById('atlas-ap-destination').selectedOptions[0];
+    return {id: target.value, label: target.textContent, group: target.parentElement.label,
+      guidance: document.getElementById('atlas-ap-mode').value, rate: document.getElementById('atlas-ap-rate').value};
   })()`);
-  assert.ok(mobile.left >= 0 && mobile.right <= mobile.w && mobile.top >= 0 && mobile.bottom <= mobile.h,
-    `phone flight plan fits inside the playable viewport: ${JSON.stringify(mobile)}`);
-  assert.equal(mobile.reach, 'atlas-ap-button');
+  assert.deepEqual(preselection, { id: 'california-coast', label: 'Golden Gate / California Coast',
+    group: 'Scenic flights', guidance: 'route', rate: '1' }, 'Only the matched GPS target is preselected');
+  const mobile = await phonePlan();
+  assert.equal(mobile.etaVisible, false, 'A preselected but inactive route has no ETA');
   await screenshot('atlas-autopilot-phone-plan.png');
-  await click('atlas-ap-button');
+  const scenicStartedAt = await evaluate('performance.now()');
+  await touchTap('atlas-ap-engage');
+  await waitFor(`${pilot}.mode === 'route'`);
+  scenic.engaged = (await observe()).flight;
+  const route = scenic.engaged.atlasAutopilot;
+  assert.ok(route.remainingM > 38_000 && route.remainingM < 41_000 && route.effectiveRate === 1);
+  assert.ok(Math.abs(route.target.x - -122.4783 * atlasGrid.halfWidth / 180) < 1 &&
+    Math.abs(route.target.z - 37.8199 * atlasGrid.halfHeight / 90) < 1,
+    'The actual native target is the Golden Gate, not the nearby SFO preset');
+  await waitFor(`${pilot}.effectiveRate === 1 && ${pilot}.playEtaSeconds > 0 &&
+    document.getElementById('atlas-ap-eta').textContent.startsWith('Play ETA ~')`, 33000);
+  scenic.normal = (await observe()).flight;
+  assert.equal(await evaluate("document.getElementById('atlas-ap-eta').closest('[aria-live], [role=status]')"), null,
+    'Changing ETA is not announced live');
+  await showPlan(touchTap);
+  scenic.liveMobile = await phonePlan();
+  assert.ok(scenic.liveMobile.etaVisible, 'Phone flight plan still fits when ETA is displayed');
+  await select('atlas-ap-rate', '10');
+  await waitFor(`${pilot}.requestedRate === 10 && ${pilot}.effectiveRate > 1 && ${pilot}.playEtaSeconds > 0`);
+  await touchTap('atlas-ap-button');
+  scenic.fast = await measureFlight();
+  assert.ok(scenic.fast.gpsProgress > 200 && scenic.fast.after.atlasAutopilot.playEtaSeconds > 0 &&
+    scenic.fast.after.atlasAutopilot.playEtaSeconds < scenic.normal.atlasAutopilot.playEtaSeconds,
+    'Compression makes real approach progress and reduces play ETA');
+  await waitFor(`${pilot}.effectiveRate === 1 && ${pilot}.remainingM < 25000 && ${pilot}.playEtaSeconds > 0`, 45000);
+  scenic.approach = (await observe()).flight;
+  assert.ok(scenic.approach.atlasAutopilot.playEtaSeconds > 60, 'Final approach still needs roughly a real minute or more');
+  assert.match(await evaluate("document.getElementById('atlas-ap-status').textContent"), /Approach GPS · 10× requested \/ 1× effective/);
+  await screenshot('atlas-scenic-phone-approach.png');
+  await waitFor(`${flying} && ${pilot}.status === 'arrived'`, 135000);
+  scenic.arrived = (await observe()).flight;
+  scenic.captureWallSeconds = ((await evaluate('performance.now()')) - scenicStartedAt) / 1000;
+  const { aircraft: jet, atlasAutopilot: arrival } = scenic.arrived;
+  assert.ok(Math.hypot(wrapAtlasX(jet.x - arrival.target.x), jet.z - arrival.target.z) <= 5000 &&
+    !jet.onGround && arrival.effectiveRate === 1 && arrival.playEtaSeconds === undefined &&
+    scenic.arrived.crashes === 0 && scenic.arrived.landings === 0, 'Scenic AP reaches the real 1× capture circle and stays airborne');
   await setPhone(false);
   await returnToGarage();
   await select('game-mode', 'flight');
   await waitFor(`${diag}.selectedTrack === 'flight:interceptor-bay' && ${state}.phase === 'ready'`);
   assert.equal(await evaluate(`${state}.flight.atlasAutopilot`), undefined, 'Atlas feature stays out of normal practice flight');
-  return { atlantic, pacific, acceleration, traveled, manualRate, before, after, handoff, mobile };
+  return { atlantic, pacific, acceleration, traveled, manualRate, before, after, handoff, mobile, scenic };
 }
