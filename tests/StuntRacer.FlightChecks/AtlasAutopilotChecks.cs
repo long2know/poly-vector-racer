@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Text.Json;
 using StuntRacer.Flight;
@@ -73,6 +74,84 @@ internal static class AtlasAutopilotChecks
             departing.AtlasAutopilot!.Status == "acquiring", "Countdown completes without moving or refueling the aircraft");
     }
 
+    public static void EarlyVoyageCompression() => CheckEarlyVoyages(Flat.Value);
+
+    private static void CheckEarlyVoyages(WorldAtlasBase fallback)
+    {
+        const double frame = 1.0 / 60;
+        var departureControls = Idle with { Throttle = .47, Assisted = true };
+        foreach (var leg in new[]
+        {
+            (Name: "JFK → Heathrow", Lon: -73.7781, Lat: 40.6413, EndLon: -.4543, EndLat: 51.47),
+            (Name: "Haneda → SFO", Lon: 139.7798, Lat: 35.5494, EndLon: -122.379, EndLat: 37.6213)
+        })
+        {
+            var origin = WorldAtlasGrid.Project(leg.Lon, leg.Lat);
+            var target = WorldAtlasGrid.Project(leg.EndLon, leg.EndLat);
+            var heading = Math.Atan2(WorldAtlasGrid.Wrap(target.X - origin.X), target.Z - origin.Z);
+            FlightSimulation Depart(double rate)
+            {
+                var world = FlightWorldDefinition.CreateAtlas(new("voyage", leg.Name, leg.Lon, leg.Lat, heading), new(fallback));
+                var flight = new FlightSimulation(world);
+                flight.Command("start");
+                for (var i = 0; i < 195; i++) flight.AdvanceAtlas(frame, departureControls, false);
+                flight.ConfigureAtlasAutopilot(Route(leg.EndLon, leg.EndLat) with { Rate = rate });
+                return flight;
+            }
+
+            var fast = Depart(10);
+            var normal = Depart(1);
+            var launch = fast.Snapshot;
+            Check.That(launch is { Phase: "flying", Aircraft.Y: < 2500,
+                AtlasAutopilot: { RequestedRate: 10, EffectiveRate: 1, AltitudeM: 10_500 } },
+                $"{leg.Name} starts from ordinary low-altitude flight, not cruise");
+
+            var wallFrames = 0;
+            var established = launch;
+            while (wallFrames < 28 * 60 && established.AtlasAutopilot!.EffectiveRate < 10)
+            {
+                established = fast.AdvanceAtlas(frame, departureControls, false);
+                normal.AdvanceAtlas(frame, departureControls, false);
+                wallFrames++;
+            }
+            Check.That(established is { Phase: "flying", Aircraft: { Y: < 6000, VerticalSpeed: > 4 },
+                AtlasAutopilot: { Status: "climbing", EffectiveRate: 10 } },
+                $"{leg.Name} must reach 10× in a safe climb by {wallFrames * frame:F2} wall s: " +
+                $"{FlightScenarios.Describe(established)} / {established.AtlasAutopilot}");
+
+            var normalStart = normal.Snapshot;
+            for (var i = 0; i < 120; i++)
+            {
+                fast.AdvanceAtlas(frame, departureControls, false);
+                normal.AdvanceAtlas(frame, departureControls, false);
+            }
+            var after = fast.Snapshot;
+            var traveled = established.AtlasAutopilot!.RemainingM!.Value - after.AtlasAutopilot!.RemainingM!.Value;
+            var uncompressed = normalStart.AtlasAutopilot!.RemainingM!.Value - normal.Snapshot.AtlasAutopilot!.RemainingM!.Value;
+            Check.Near(after.Time - established.Time, 20, 1e-8, $"{leg.Name} game clock ran at 10× over two wall seconds");
+            Check.That(after.Tick == established.Tick + 2400 && after.Crashes == 0 &&
+                traveled is > 3300 and < 6000 && traveled > 8 * uncompressed &&
+                after.Aircraft.Y > established.Aircraft.Y && after.Aircraft.Fuel < established.Aircraft.Fuel,
+                $"{leg.Name} makes reachable GPS, altitude and fuel progress on the native trajectory: {traveled:F1} m");
+            Console.WriteLine($"TRACE {leg.Name}: full rate at {wallFrames * frame:F2} wall s, " +
+                $"{established.Aircraft.Y:F1} m; next 2 wall s advanced {after.Time - established.Time:F2} flight s " +
+                $"and {traveled:F1} GPS m vs {uncompressed:F1} m at 1×.");
+
+            foreach (var rate in new[] { 2, 5, 10 })
+            {
+                fast.ConfigureAtlasAutopilot(new("setRate", Rate: rate));
+                var changed = fast.AdvanceAtlas(frame, departureControls, false);
+                Check.That(changed.Tick == after.Tick + 2 * rate && changed.AtlasAutopilot is
+                    { Status: "climbing", RequestedRate: var requested, EffectiveRate: var applied } pilot &&
+                    requested == rate && applied == rate && pilot.Target == after.AtlasAutopilot!.Target &&
+                    pilot.AltitudeM == after.AtlasAutopilot.AltitudeM && pilot.SpeedMps == after.AtlasAutopilot.SpeedMps &&
+                    pilot.RemainingM < after.AtlasAutopilot.RemainingM,
+                    $"{leg.Name} changes to {rate}× during the same climb without re-engaging or resetting its route");
+                after = changed;
+            }
+        }
+    }
+
     public static void FixedStepsAndManual()
     {
         var one = Create();
@@ -82,11 +161,12 @@ internal static class AtlasAutopilotChecks
         var spawn = ten.Snapshot;
         Check.That(ten.AdvanceAtlas(0, Idle, false).Aircraft == spawn.Aircraft, "Engagement cannot change aircraft pose or speed");
         var cruise = Cruise(ten);
-        while (one.Snapshot.Tick < cruise.Tick) one.AdvanceAtlas(.25, Idle, false);
+        while (one.Snapshot.Tick + 30 <= cruise.Tick) one.AdvanceAtlas(.25, Idle, false);
+        one.AdvanceAtlas((cruise.Tick - one.Snapshot.Tick) * Step, Idle, false);
         Console.WriteLine($"TRACE Atlas acquisition {FlightScenarios.Describe(cruise)}");
         Check.That(cruise.Aircraft == one.Snapshot.Aircraft && cruise.Tick == one.Snapshot.Tick &&
             !cruise.Aircraft.Afterburner && cruise.Aircraft.Y > spawn.Aircraft.Y + 8000,
-            "Climb is actual 1× physics with the same initial conditions");
+            "The climb reaches identical pose and fuel on the same tick at 1× and 10×");
 
         var throttleOnly = Idle with { Throttle = 1 };
         for (var i = 0; i < 576; i++) one.AdvanceAtlas(1.0 / 144, throttleOnly, false);
@@ -96,11 +176,17 @@ internal static class AtlasAutopilotChecks
             before.Time == one.Snapshot.Time && before.AtlasAutopilot!.EffectiveRate == 10,
             "1x at 144 Hz and 10x at 20 Hz integrate exactly the same state and fuel; throttle release is not takeover");
 
+        var limited = ten.AdvanceAtlas(.12, Idle, false);
+        Check.That(limited.Tick == before.Tick + 60 && limited.AtlasAutopilot is { RequestedRate: 10 } pilot &&
+            pilot.Reason.Contains("per-frame simulation budget", StringComparison.Ordinal),
+            "A slower frame caps actual flight progress and explains the lower applied rate");
+        Check.Near(limited.AtlasAutopilot!.EffectiveRate, (limited.Time - before.Time) / .12, 1e-8,
+            "The reported rate reflects the capped frame's simulated time");
         var capped = ten.AdvanceAtlas(double.MaxValue, Idle, false);
-        Check.That(capped.Tick == before.Tick + 60 && ten.AdvanceAtlas(0, Idle, false).Tick == capped.Tick,
+        Check.That(capped.Tick == limited.Tick + 60 &&
+            capped.AtlasAutopilot is { RequestedRate: 10, EffectiveRate: 2 } && ten.AdvanceAtlas(0, Idle, false) == capped,
             "Accelerated stalls are capped at 60 native ticks and never bank extra whole steps");
-        one.AdvanceAtlas(.25, Idle, false);
-        one.AdvanceAtlas(.25, Idle, false);
+        for (var i = 0; i < 4; i++) one.AdvanceAtlas(.25, Idle, false);
         ten.ConfigureAtlasAutopilot(new("setRate", Rate: 2));
         var doubled = ten.AdvanceAtlas(1.0 / 60, Idle, false);
         Check.That(doubled.Tick == capped.Tick + 4 && doubled.AtlasAutopilot is { RequestedRate: 2, EffectiveRate: 2 },
@@ -196,14 +282,93 @@ internal static class AtlasAutopilotChecks
 
         var terrainFlight = Create();
         terrainFlight.ConfigureAtlasAutopilot(Hold(10) with { AltitudeM = 2500 });
-        var before = Cruise(terrainFlight);
+        Cruise(terrainFlight);
+        for (var i = 0; i < 200; i++) terrainFlight.AdvanceAtlas(.05, Idle, false);
+        var before = terrainFlight.Snapshot;
         var root = new WorldAtlasTileKey(0, 0, 0);
         terrainFlight.World.AtlasElevation!.Install(root, AtlasChecks.Quartet(root, 10_000, 0));
         Check.That(terrainFlight.World.TerrainHeightAt(before.Aircraft.X, before.Aircraft.Z) == 10_000 &&
-            terrainFlight.Snapshot == before, "An authored maximum-height detail activation does not move aircraft or change the safe floor");
+            before.AtlasAutopilot is { Status: "cruise", EffectiveRate: 10, AltitudeM: 10_500 } &&
+            terrainFlight.Snapshot == before, "Settled cruise clears maximum-height detail without moving aircraft or raising the floor");
         var after = terrainFlight.AdvanceAtlas(.05, Idle, false);
-        Check.That(after.Tick == before.Tick + 60 && after.Phase == "flying" && after.Aircraft.Y > 10_300 &&
+        Check.That(after.Tick == before.Tick + 60 && after.Phase == "flying" && after.Aircraft.Y > 10_450 &&
             after.Aircraft.Y - before.Aircraft.Y < 4, "Aircraft still integrates actual clearance above installed Atlas detail");
+    }
+
+    public static void ClimbSafety()
+    {
+        var banking = Create();
+        banking.ConfigureAtlasAutopilot(Hold(10) with { HeadingDeg = 315 });
+        for (var i = 0; i < 80; i++) banking.AdvanceAtlas(.25, Idle, false);
+        var turn = banking.Snapshot;
+        Check.That(turn.Tick == 2400 && turn.Aircraft is { Speed: > 185, VerticalSpeed: > 4 } &&
+            Math.Abs(turn.Aircraft.Roll) > .15 &&
+            turn.AtlasAutopilot is { RequestedRate: 10, EffectiveRate: 1 } bank &&
+            bank.Reason.Contains("leveling", StringComparison.Ordinal),
+            $"A genuine climbing turn stays at 1×: {FlightScenarios.Describe(turn)} / {turn.AtlasAutopilot}");
+
+        var simulation = Create(lat: .0025);
+        simulation.ConfigureAtlasAutopilot(Hold(10));
+        for (var i = 0; i < 30 * 60 && simulation.Snapshot.AtlasAutopilot!.EffectiveRate < 10; i++)
+            simulation.AdvanceAtlas(1.0 / 60, Idle, false);
+        var climbing = simulation.AdvanceAtlas(Step / 20, Idle, false);
+        Check.That(climbing is { Alpha: > .49 and < .51, AtlasAutopilot: { Status: "climbing", EffectiveRate: 10 } },
+            "Established climb has a half-tick of accelerated time before terrain changes");
+
+        var elevation = simulation.World.AtlasElevation!;
+        var detailStep = WorldAtlasGrid.Step(8);
+        var x = climbing.Aircraft.X;
+        var z = climbing.Aircraft.Z;
+        var peakX = (Math.Floor(x / detailStep) + 4) * detailStep;
+        var peakZ = Math.Round(z / detailStep) * detailStep;
+        var peakHeight = (short)(climbing.Aircraft.Y - 200);
+        WorldAtlasTileKey ParentAt(int level)
+        {
+            var span = WorldAtlasGrid.Span(level);
+            return new(level, (int)Math.Floor(peakX / span), (int)Math.Floor(peakZ / span));
+        }
+
+        for (var level = 0; level <= 7; level++)
+        {
+            var parent = ParentAt(level);
+            var data = AtlasChecks.Quartet(parent, 0, 0);
+            if (level == 7)
+            {
+                var span = WorldAtlasGrid.Span(8);
+                for (var i = 0; i < 4; i++)
+                {
+                    var child = parent.Child(i);
+                    var u = (int)(peakX - child.X * (double)span) / detailStep;
+                    var v = (int)(peakZ - child.Z * (double)span) / detailStep;
+                    if (u is >= 0 and < WorldAtlasGrid.Side && v is >= 0 and < WorldAtlasGrid.Side)
+                        BinaryPrimitives.WriteInt16LittleEndian(data.AsSpan(i * WorldAtlasTile.ByteLength +
+                            16 + 2 * (v * WorldAtlasGrid.Side + u)), peakHeight);
+                }
+            }
+            elevation.Install(parent, data);
+        }
+        Check.That(elevation.Sample(peakX, peakZ).Height == peakHeight && elevation.Sample(x, z).Height == 0 &&
+            elevation.Sample(x + climbing.Aircraft.Speed * 10, z).Height == 0,
+            "Fixture streams a narrow ridge between lookahead probes while current terrain remains clear");
+        var limited = simulation.AdvanceAtlas(Step / 2, Idle, false);
+        Check.That(limited is { Phase: "flying", Alpha: > .49 and < .51,
+                AtlasAutopilot: { RequestedRate: 10, EffectiveRate: 1 } terrain } &&
+            limited.Aircraft == climbing.Aircraft && limited.Tick == climbing.Tick &&
+            terrain.Reason.Contains("Terrain clearance", StringComparison.Ordinal),
+            "New detail limits compression before the next tick and drops the previous accelerated remainder");
+        Check.That(simulation.AdvanceAtlas(.25, Idle, false).Tick == limited.Tick + 30,
+            "The aircraft keeps climbing in real time near the new ridge");
+        elevation.Remove(ParentAt(0));
+        var clear = simulation.AdvanceAtlas(.05, Idle, false);
+        Check.That(clear.Tick == limited.Tick + 30 + 60 && clear.AtlasAutopilot is { Status: "climbing", EffectiveRate: 10 },
+            "The original selection resumes as soon as the active terrain clears");
+
+        simulation.Command("gear-toggle");
+        simulation.ConfigureAtlasAutopilot(Hold(10));
+        var unclearedGear = simulation.AdvanceAtlas(.25, Idle, false);
+        Check.That(unclearedGear.Tick == clear.Tick + 30 && unclearedGear.Aircraft.GearDown &&
+            unclearedGear.AtlasAutopilot is { RequestedRate: 10, EffectiveRate: 1 } gear &&
+            gear.Reason.Contains("Landing gear", StringComparison.Ordinal), "Re-engaging with gear down cannot compress a climb");
     }
 
     public static void LowFuel()
@@ -288,6 +453,7 @@ internal static class AtlasAutopilotChecks
     public static void ActualAtlas(string path)
     {
         var fallback = LoadBase(path);
+        CheckEarlyVoyages(fallback);
 
         foreach (var leg in new[]
         {
@@ -354,7 +520,8 @@ internal static class AtlasAutopilotChecks
         }
         Check.That(eastward >= distance && seams == expectedSeamCrossings &&
             Math.Abs(previous.Aircraft.Z) < 5000 && previous.Aircraft.Fuel >= .15 &&
-            previous.Aircraft.Fuel < start.Aircraft.Fuel && previous.AtlasAutopilot is { Status: "cruise", EffectiveRate: 10 },
+            previous.Aircraft.Fuel < start.Aircraft.Fuel &&
+            previous.AtlasAutopilot is { Status: "cruise", RequestedRate: 10, EffectiveRate: 2 },
             $"Eastbound hold follows the real equator with no boundary or fuel reset: {FlightScenarios.Describe(previous)}");
         return previous;
     }
@@ -415,7 +582,8 @@ internal static class AtlasAutopilotChecks
             var ticks = next.Tick - previous.Tick;
             var wasCompressed = previous.AtlasAutopilot.EffectiveRate > 1;
             if (ticks > 30) compressed = true;
-            Check.That(ticks > 0 && ticks <= (wasCompressed ? 60 : 30), "Advance respects the current native tick budget");
+            var eligible = previous.AtlasAutopilot is { Status: "climbing" or "cruise", RequestedRate: > 1 };
+            Check.That(ticks > 0 && ticks <= (eligible ? 60 : 30), "Advance respects the current native tick budget");
             var dx = WorldAtlasGrid.Wrap(next.Aircraft.X - previous.Aircraft.X);
             var dy = next.Aircraft.Y - previous.Aircraft.Y;
             var dz = next.Aircraft.Z - previous.Aircraft.Z;

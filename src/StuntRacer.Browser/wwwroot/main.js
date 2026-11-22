@@ -79,7 +79,7 @@ const atlasVoyages = {
   pacific: { name: 'Pacific / Tokyo to San Francisco', origin: { name: 'Tokyo / Haneda', lon: 139.7798, lat: 35.5494 },
     destination: { lonDeg: -122.379, latDeg: 37.6213 } },
 };
-const atlasPilotLabels = { off: 'Off', acquiring: 'Acquiring', cruise: 'Cruise', arrived: 'Arrived' };
+const atlasPilotLabels = { off: 'Off', acquiring: 'Acquiring', climbing: 'Climbing', cruise: 'Cruise', arrived: 'Arrived' };
 const atlasVoyageId = preset => preset?.startsWith('voyage-') ? preset.slice('voyage-'.length) : '';
 const atlasCourse = degrees => `${String((Math.round(degrees) + 360) % 360).padStart(3, '0')}°`;
 const hasScanner = flight => Boolean(flight?.training || flight?.duel);
@@ -496,7 +496,8 @@ function updateAtlasPilot(pilot, aircraft) {
     $('atlas-ap-take-control').disabled = status === 'off';
   }
   const mode = status === 'off' ? '' : pilot.mode === 'hold' ? ' Hold' : ' GPS';
-  text('atlas-ap-status', `AP ${atlasPilotLabels[status]}${mode} · ${pilot?.requestedRate ?? 1}× requested / ${pilot?.effectiveRate ?? 1}× effective`);
+  const effective = Number((pilot?.effectiveRate ?? 1).toFixed(1));
+  text('atlas-ap-status', `AP ${atlasPilotLabels[status]}${mode} · ${pilot?.requestedRate ?? 1}× requested / ${effective}× effective`);
   text('atlas-ap-reason', pilot?.reason ?? '');
   const fuel = $('atlas-ap-fuel');
   const fuelEstimate = Number.isFinite(pilot?.projectedFuel);

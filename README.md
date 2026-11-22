@@ -141,12 +141,14 @@ heading in degrees or leave it blank to keep your current course. Both modes
 let you set altitude (metres) and speed (m/s); the game may raise the altitude
 to maintain terrain clearance.
 
-Choose **Engage AP** and let the jet settle into cruise. **Time compression**
-can request **1×, 2×, 5× or 10×**; open the panel again to change it while
-autopilot is on. The cockpit shows the requested and effective rates and why
-they may differ. Acquisition and approach run at **1×**. Pause freezes
-the flight, including time compression. **Take control** or any manual flight
-input, including throttle trim or gear, returns control at **1×** with your
+Choose **1×, 2×, 5× or 10×** under **Time compression** and select **Engage AP**.
+You can change the rate while autopilot is on without setting up the route
+again. Compression begins once the jet establishes a stable, terrain-clear
+climb; it doesn't need to reach cruise altitude first. Initial turns, unsafe
+flight and destination approach stay at **1×**. The cockpit shows the selected
+and effective rates, including when a slow frame lowers the applied rate.
+Pause freezes the flight, including time compression. **Take control** or
+any manual flight input, including throttle trim or gear, returns control at **1×** with your
 stored throttle setting. On phones the panel scrolls; the touch flight
 controls remain available. **Esc** closes the panel and returns keyboard
 focus to the flight view.

@@ -97,11 +97,20 @@ engagement and optional detail loading do not raise the aircraft.
 
 Call `AdvanceAtlas(seconds, input, manualIntent)` once per wall frame. The
 pilot drives the existing roll, pitch and dry throttle controls at 120 Hz.
-It compresses stable airborne cruise only, with at most 60 fixed ticks per
-frame instead of the usual 30. Acquisition, approach, arrival, low fuel and
-unsafe flight return to 1×. Pause, takeover or loss of cruise discard pending
-accelerated time. Roll, pitch, yaw, airbrake, afterburner, gear, or explicit
-manual intent cancel the pilot before manual physics; throttle alone does not.
+Compression starts in a stable climb or cruise. Before cruise, a clean jet
+must be on course, nearly wings-level, climbing at 4–60 m/s and within the
+safe speed band. Below the global clearance height the pilot requires 850 m
+over active terrain, using the existing 30-second lookahead and a conservative
+bound on nearby cells to account for narrow streamed ridges. Turns, unsafe
+terrain/attitude, gear down, low fuel, approach and arrival stay at 1×.
+
+Compressed frames advance at most 60 fixed ticks instead of the usual 30.
+`requestedRate` is the selected multiplier; `effectiveRate` reflects the
+applied rate after the frame budget, and may be fractional. The cap drops
+excess time rather than queuing it. Pause, takeover or loss of eligibility
+drop any pending accelerated remainder. Roll, pitch, yaw, airbrake,
+afterburner, gear, or explicit manual intent cancel the pilot before manual
+physics; throttle alone does not.
 
 The pilot consumes 1% of the normal dry fuel rate as a game endurance setting.
 Manual and afterburner burn remain unchanged, and engagement never refuels.
@@ -162,10 +171,12 @@ The standalone SDK assertion executable has no test-framework dependencies.
 Scenarios use only public commands/inputs/observations: runway takeoff, mirrored
 turns, stall/descent, actual gear-down approach/flare/braking versus hard/gear-up/
 water impacts, full attitude maneuvers, fixed-step schedules and lifecycle.
-Atlas autopilot checks cover command validation, fixed-step equivalence,
-takeover, fuel, streamed terrain bounds, capture and polar/date-line navigation.
+Atlas autopilot checks cover command validation, early climb compression,
+fixed-step equivalence, takeover, fuel, streamed terrain bounds, capture and
+polar/date-line navigation.
 
-The opt-in endurance check flies NYC–London in both directions, Tokyo–San
+The opt-in endurance check verifies early compression on the JFK and Haneda
+voyage starts and flies NYC–London in both directions, Tokyo–San
 Francisco across the date line, and two eastbound equatorial laps, first using
 hold and route waypoints and then heading hold alone on the same tank. Supply
 the bundled `base.zip` or an explicit extracted WFA1 `base.bin`:

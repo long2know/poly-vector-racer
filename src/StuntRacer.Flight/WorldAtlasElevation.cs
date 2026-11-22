@@ -114,12 +114,28 @@ public sealed class WorldAtlasBase
     {
         if (!double.IsFinite(x) || !double.IsFinite(z))
             throw new ArgumentOutOfRangeException(nameof(x), "Atlas sample positions must be finite.");
+        var (u, v) = GridPosition(x, z);
+        return WorldAtlasGrid.Sample(heights, water, Columns, Rows, u, v, wrapColumn: true);
+    }
+
+    internal short MaximumInCell(double x, double z)
+    {
+        var (u, v) = GridPosition(x, z);
+        var i = (int)u;
+        var row = Math.Min((int)v, Rows - 2) * Columns;
+        var a = row + i;
+        var c = row + (i + 1 == Columns ? 0 : i + 1);
+        return Math.Max(Math.Max(heights[a], heights[c]), Math.Max(heights[a + Columns], heights[c + Columns]));
+    }
+
+    private static (double U, double V) GridPosition(double x, double z)
+    {
         var u = (WorldAtlasGrid.Wrap(x) + WorldAtlasGrid.HalfWidth) / Spacing;
         // A sub-nanometre west-inclusive query can round up to the omitted eastern column.
         if (u >= Columns) u = 0;
         var v = (Math.Clamp(z, -WorldAtlasGrid.HalfHeight, WorldAtlasGrid.HalfHeight) +
             WorldAtlasGrid.HalfHeight) / Spacing;
-        return WorldAtlasGrid.Sample(heights, water, Columns, Rows, u, v, wrapColumn: true);
+        return (u, v);
     }
 }
 
@@ -157,6 +173,24 @@ public sealed class WorldAtlasTile
             Math.Clamp((x - Key.X * (double)span) / step, 0, Side - 1),
             Math.Clamp((z - Key.Z * (double)span) / step, 0, Side - 1), wrapColumn: false);
     }
+
+    internal short MaximumInBox(double x, double z, double radius)
+    {
+        var step = WorldAtlasGrid.Step(Key.Level);
+        var span = WorldAtlasGrid.Span(Key.Level);
+        var u = WorldAtlasGrid.Wrap(x - Key.X * (double)span);
+        var v = z - Key.Z * (double)span;
+        int First(double center) => (int)Math.Clamp(Math.Floor((center - radius) / step), 0, Side - 1);
+        int Last(double center) => (int)Math.Clamp(Math.Ceiling((center + radius) / step), 0, Side - 1);
+        var firstX = First(u);
+        var lastX = Last(u);
+        var lastZ = Last(v);
+        var maximum = short.MinValue;
+        for (var j = First(v); j <= lastZ; j++)
+            for (var i = firstX; i <= lastX; i++)
+                maximum = Math.Max(maximum, heights[j * Side + i]);
+        return maximum;
+    }
 }
 
 public sealed class WorldAtlasElevation(WorldAtlasBase fallback)
@@ -191,6 +225,28 @@ public sealed class WorldAtlasElevation(WorldAtlasBase fallback)
             throw new ArgumentOutOfRangeException(nameof(x), "Atlas sample positions must be finite.");
         x = WorldAtlasGrid.Wrap(x);
         z = Math.Clamp(z, -WorldAtlasGrid.HalfHeight, WorldAtlasGrid.HalfHeight);
+        return ActiveTileAt(x, z)?.Sample(x, z) ?? fallback.Sample(x, z);
+    }
+
+    internal short MaximumNearby(double x, double z, double radius)
+    {
+        if (radius <= 0 || radius * 2 >= WorldAtlasGrid.Span(8))
+            throw new ArgumentOutOfRangeException(nameof(radius));
+
+        // Every possible active tile or base cell intersecting this box contains a
+        // corner: the grid levels align and the box is narrower than the finest tile.
+        var west = WorldAtlasGrid.Wrap(x - radius);
+        var east = WorldAtlasGrid.Wrap(x + radius);
+        var south = Math.Max(z - radius, -WorldAtlasGrid.HalfHeight);
+        var north = Math.Min(z + radius, WorldAtlasGrid.HalfHeight);
+        short AtCorner(double cornerX, double cornerZ) =>
+            ActiveTileAt(cornerX, cornerZ)?.MaximumInBox(x, z, radius) ?? fallback.MaximumInCell(cornerX, cornerZ);
+        return Math.Max(Math.Max(AtCorner(west, south), AtCorner(east, south)),
+            Math.Max(AtCorner(west, north), AtCorner(east, north)));
+    }
+
+    private WorldAtlasTile? ActiveTileAt(double x, double z)
+    {
         WorldAtlasTile? deepest = null;
         for (var level = 1; level <= 8; level++)
         {
@@ -198,6 +254,6 @@ public sealed class WorldAtlasElevation(WorldAtlasBase fallback)
             if (!tiles.TryGetValue(key, out var tile)) break;
             deepest = tile;
         }
-        return deepest?.Sample(x, z) ?? fallback.Sample(x, z);
+        return deepest;
     }
 }

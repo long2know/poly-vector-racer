@@ -82,7 +82,7 @@ public sealed record AtlasAutopilotCommand(
 public sealed record AtlasAutopilotTarget(double X, double Z);
 
 public sealed record AtlasAutopilotSnapshot(
-    string Status, string Reason, string? Mode, int RequestedRate, int EffectiveRate,
+    string Status, string Reason, string? Mode, int RequestedRate, double EffectiveRate,
     AtlasAutopilotTarget? Target, double? RemainingM, double FuelRateScale,
     double? SpeedMps, double? AltitudeM, double? HeadingDeg)
 {
