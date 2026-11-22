@@ -125,6 +125,37 @@ jet cockpit with a clear canopy, a glass HUD and working instruments.
 The Amiga physics and map remain independent. See [World Flight setup and data credits](tools/WorldFlight/README.md)
 to build and mount the optional terrain package.
 
+**World Flight Atlas / Global** starts airborne and is the only flight mode
+with a **Flight plan** panel. In the Atlas Garage, pick **Atlantic / New York
+to London** or **Pacific / Tokyo to San Francisco** from **Departure**, then
+choose any aircraft and start the flight. Those departures preselect London
+Heathrow or San Francisco SFO in the cockpit. The routes work with Atlas
+base terrain alone; regional scenery is optional.
+
+Open **Flight plan**, keep the preset or select **Custom coordinates**
+(longitude −180° to 180°, latitude −90° to 90°; west and south are negative).
+You can change the GPS target in flight without restarting or changing
+aircraft. The flight HUD shows the bearing and remaining nautical miles.
+To fly a course instead, select **Heading, altitude & speed hold**. Enter a
+heading in degrees or leave it blank to keep your current course. Both modes
+let you set altitude (metres) and speed (m/s); the game may raise the altitude
+to maintain terrain clearance.
+
+Choose **Engage AP** and let the jet settle into cruise. **Time compression**
+can request **1×, 2×, 5× or 10×**; open the panel again to change it while
+autopilot is on. The cockpit shows the requested and effective rates and why
+they may differ. Acquisition and approach run at **1×**. Pause freezes
+the flight, including time compression. **Take control** or any manual flight
+input, including throttle trim or gear, returns control at **1×** with your
+stored throttle setting. On phones the panel scrolls; the touch flight
+controls remain available. **Esc** closes the panel and returns keyboard
+focus to the flight view.
+
+The panel estimates game fuel on arrival for an active GPS route. Atlas
+navigation, cruise fuel and endurance are game rules, not real-world planning
+data. Arrival means the autopilot holds an airborne course at **1×**. It never
+auto-lands; airport markers are not modeled runways.
+
 **Seattle Scenic Drive** is separate from World Flight and Meridian City. It
 uses the same optional World Flight ZIP, including its Seattle OpenStreetMap
 roads, scenery and detailed terrain. In the **Garage**, select **Seattle** and

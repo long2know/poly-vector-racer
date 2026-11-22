@@ -66,6 +66,30 @@ public sealed record FlightDisplaySnapshot(
 
 public sealed record FlightConfigurationSnapshot(bool HookDown, bool OnCarrier, int GearProgress);
 
+public sealed record AtlasDestination(
+    [property: JsonRequired] double LonDeg,
+    [property: JsonRequired] double LatDeg);
+
+public sealed record AtlasAutopilotCommand(
+    string Action,
+    string? Mode = null,
+    AtlasDestination? Destination = null,
+    double? HeadingDeg = null,
+    double? AltitudeM = null,
+    double? SpeedMps = null,
+    double? Rate = null);
+
+public sealed record AtlasAutopilotTarget(double X, double Z);
+
+public sealed record AtlasAutopilotSnapshot(
+    string Status, string Reason, string? Mode, int RequestedRate, int EffectiveRate,
+    AtlasAutopilotTarget? Target, double? RemainingM, double FuelRateScale,
+    double? SpeedMps, double? AltitudeM, double? HeadingDeg)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? ProjectedFuel { get; init; }
+}
+
 public sealed record FlightSnapshot(
     AircraftSnapshot Aircraft,
     string Phase,
@@ -86,4 +110,7 @@ public sealed record FlightSnapshot(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlightDuelState? Duel { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AtlasAutopilotSnapshot? AtlasAutopilot { get; init; }
 }

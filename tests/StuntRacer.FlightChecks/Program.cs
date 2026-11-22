@@ -1,5 +1,24 @@
 using StuntRacer.FlightChecks;
 
+if (args is ["--atlas-endurance", var baseArchive])
+{
+    try
+    {
+        AtlasAutopilotChecks.ActualAtlas(baseArchive);
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"FAIL Atlas endurance: {exception.Message}");
+        return 1;
+    }
+}
+if (args.Contains("--atlas-endurance", StringComparer.Ordinal))
+{
+    Console.Error.WriteLine("Usage: --atlas-endurance /path/to/base.zip-or-extracted-base.bin");
+    return 1;
+}
+
 (string Name, Action Run)[] checks =
 [
     ("world and JSON contract", ContractChecks.WorldAndJson),
@@ -30,7 +49,15 @@ using StuntRacer.FlightChecks;
     ("atlas WFA1 triangle, wrapping and both polar rows", AtlasChecks.FallbackAndWorldBounds),
     ("atlas signed detail activates and retires as complete hierarchies", AtlasChecks.DetailActivation),
     ("atlas high-mountain departure clears peaks understated by the fallback", AtlasChecks.DepartureClearance),
-    ("atlas flight crosses the date line and departs both poles without waiting", AtlasChecks.ContinuousFlight)
+    ("atlas flight crosses the date line and departs both poles without waiting", AtlasChecks.ContinuousFlight),
+    ("atlas autopilot command validation and JSON contract", AtlasAutopilotChecks.CommandsAndWire),
+    ("atlas autopilot fixed-state compression and manual takeover", AtlasAutopilotChecks.FixedStepsAndManual),
+    ("atlas autopilot pause, lifecycle and dry fuel accounting", AtlasAutopilotChecks.PauseAndFuel),
+    ("atlas autopilot heading/altitude/speed holds and installed terrain clearance", AtlasAutopilotChecks.HoldAndTerrain),
+    ("atlas autopilot low fuel limits compression, no manual fuel bonus", AtlasAutopilotChecks.LowFuel),
+    ("atlas autopilot date-line route, 1x capture and onward flight", AtlasAutopilotChecks.CaptureAndDateLine),
+    ("atlas autopilot polar hold remains tangent to bounded world", AtlasAutopilotChecks.PolarHold),
+    ("atlas autopilot approach captures near each pole and continues safely", AtlasAutopilotChecks.PolarRoute)
 ];
 
 var failed = 0;

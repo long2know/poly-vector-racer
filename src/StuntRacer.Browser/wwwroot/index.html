@@ -212,6 +212,55 @@
       <button id="training-scan-button" type="button" aria-keyshortcuts="T" title="Scan a nearby practice prop (T)" hidden>SCAN</button>
     </div>
 
+    <section id="atlas-ap" class="atlas-ap atlas-only" aria-label="Atlas flight plan and autopilot" hidden>
+      <div class="atlas-ap-dock">
+        <div class="atlas-ap-summary" role="status">
+          <strong id="atlas-ap-status">AP Off</strong>
+          <span id="atlas-ap-reason"></span>
+        </div>
+        <button id="atlas-ap-button" type="button" aria-controls="atlas-ap-panel" aria-expanded="false">Flight plan</button>
+        <button id="atlas-ap-take-control" type="button" disabled>Take control</button>
+      </div>
+      <form id="atlas-ap-panel" class="atlas-ap-panel" aria-label="Set Atlas autopilot" hidden>
+        <label for="atlas-ap-mode">Guidance
+          <select id="atlas-ap-mode">
+            <option value="route">GPS destination</option>
+            <option value="hold">Heading, altitude &amp; speed hold</option>
+          </select>
+        </label>
+        <label id="atlas-ap-route" for="atlas-ap-destination">Destination
+          <select id="atlas-ap-destination">
+            <option value="atlantic">London / Heathrow (Atlantic)</option>
+            <option value="pacific">San Francisco / SFO (Pacific)</option>
+            <option value="custom">Custom coordinates</option>
+          </select>
+        </label>
+        <fieldset id="atlas-ap-coordinates" class="atlas-ap-fields" aria-label="Destination coordinates" hidden disabled>
+          <label for="atlas-ap-lon">Longitude °<input id="atlas-ap-lon" type="number" min="-180" max="180" step="any" required></label>
+          <label for="atlas-ap-lat">Latitude °<input id="atlas-ap-lat" type="number" min="-90" max="90" step="any" required></label>
+        </fieldset>
+        <label id="atlas-ap-hold" for="atlas-ap-heading" hidden>Heading ° (blank = current)
+          <input id="atlas-ap-heading" type="number" min="0" max="360" step="any" placeholder="Current heading" disabled>
+        </label>
+        <div class="atlas-ap-fields">
+          <label for="atlas-ap-altitude">Altitude (m)<input id="atlas-ap-altitude" type="number" min="1500" max="12000" step="any" value="10500" required></label>
+          <label for="atlas-ap-speed">Speed (m/s)<input id="atlas-ap-speed" type="number" min="180" max="300" step="any" value="250" required></label>
+        </div>
+        <div class="atlas-ap-fields">
+          <label for="atlas-ap-rate">Time compression
+            <select id="atlas-ap-rate">
+              <option value="1">1&times;</option><option value="2">2&times;</option>
+              <option value="5">5&times;</option><option value="10">10&times;</option>
+            </select>
+          </label>
+          <button id="atlas-ap-engage" type="submit">Engage AP</button>
+        </div>
+        <p id="atlas-ap-error" role="alert" hidden></p>
+        <p id="atlas-ap-fuel" hidden></p>
+        <p>Game only: fuel endurance is adjusted for Atlas cruise. You can take over at any time. No auto-landing.</p>
+      </form>
+    </section>
+
     <section id="pause-panel" class="modal-panel" aria-labelledby="pause-title" hidden>
       <span class="eyebrow">TAKE A BREATHER</span>
       <h2 id="pause-title">ON HOLD.</h2>
@@ -345,6 +394,7 @@
       <div class="atlas-only">
         <h3>WORLD FLIGHT ATLAS</h3>
         <p class="small">In the Garage, choose a preset or enter signed longitude (west is negative), latitude (south is negative) and a heading. Set the departure, then start flight.</p>
+        <p class="small">Once airborne, open Flight plan for GPS, heading hold and time compression. Take control or move a flight control to disengage. Autopilot never lands the plane.</p>
         <p class="small">The whole globe uses measured elevation and water data. Optional regional detail loads as you fly. Airport labels are landmarks, not modeled runways. For play, not navigation.</p>
       </div>
     </div>

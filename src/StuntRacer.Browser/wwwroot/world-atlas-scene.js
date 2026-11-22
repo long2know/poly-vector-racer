@@ -1,7 +1,8 @@
 import { FlightScene } from './flight-scene.js';
 import { clamp, pose } from './engine/math.js';
 import {
-  atlasBounds, atlasOverlap, indexAtlasFeatures, makeAtlasFeatures, makeAtlasGround, makeAtlasSeam, sampleAtlasTile,
+  atlasBounds, atlasOverlap, atlasSceneryIntersects, indexAtlasFeatures, makeAtlasFeatures, makeAtlasGround,
+  makeAtlasScenery, makeAtlasSeam, sampleAtlasTile,
 } from './world-atlas-geometry.js';
 import { atlasGrid, wrapAtlasX } from './world-atlas.js';
 
@@ -11,6 +12,7 @@ const featureLimit = 48, overlayLimit = 64, overlayRetention = 4;
 const regionSize = 2048, mapCell = 4096, mapScale = 280;
 const labelRange = 32000, labelLimit = 12;
 const prepareMilliseconds = 3, uploadByteLimit = 160 * 1024, uploadFloats = 1536 * 30;
+const sceneryCell = 512;
 
 const same = (a, b) => a.length === b.length && a.every((item, i) => item === b[i]);
 const validKey = key => typeof key === 'string' && key.length > 0 && key.length <= 160;
@@ -95,6 +97,8 @@ export class WorldAtlasScene extends FlightScene {
     this.overlayTargets = new Map();
     this.overlayHolds = new Map();
     this.blockedOverlays = new Set();
+    this.scenery = new Map();
+    this.sceneryTargets = new Map();
     this.retired = [];
     this.renderWork = { peakMilliseconds: 0, peakTransportMilliseconds: 0, peakUploadBytes: 0 };
     this.labelPoints = [];
@@ -135,16 +139,19 @@ export class WorldAtlasScene extends FlightScene {
     const transportMilliseconds = performance.now() - transportStart, budget = new FrameWork();
     this.flushRetired(budget);
     const featureTurn = this.overlayJob?.built && this.frameId % 3 === 1;
-    const changed = this.updateGround(tiles, budget, !featureTurn);
+    const sceneryTurn = this.sceneryJob?.built?.vertices && this.frameId % 6 === 2;
+    const changed = this.updateGround(tiles, budget, !featureTurn && !sceneryTurn);
     const newFeatures = this.indexChunks(features, budget);
+    if (sceneryTurn) this.updateScenery(changed || newFeatures, budget, aircraft.y, balanced);
     this.updateOverlays(changed || newFeatures, budget);
     this.finishOverlayHandoffs();
     this.updateSeams(changed, budget);
+    if (!sceneryTurn) this.updateScenery(changed || newFeatures, budget, aircraft.y, balanced);
     this.updateLabelPoints(now, changed || newFeatures);
 
     const modelAt = tile => pose([localX(tile.x + tileSpan(tile) / 2) - tileSpan(tile) / 2, 0, tile.z - oz]);
     const draws = [];
-    let renderedRoadMeshes = 0, renderedFeatures = 0, buildings = 0;
+    let renderedRoadMeshes = 0, renderedFeatures = 0, buildings = 0, trees = 0, sceneryMeshes = 0;
     const appendOverlay = (record, model) => {
       const overlay = this.overlays.get(record);
       if (!overlay?.meshes.length) return;
@@ -157,6 +164,12 @@ export class WorldAtlasScene extends FlightScene {
       const model = modelAt(record.tile);
       draws.push({ mesh: record.mesh, model, shadow: false });
       if (!this.blockedOverlays.has(record)) appendOverlay(record, model);
+      const scenery = this.sceneryVisible && this.scenery.get(record);
+      if (scenery?.mesh) {
+        draws.push({ mesh: scenery.mesh, model, shadow: false, atlasScenery: true });
+        trees += scenery.trees;
+        sceneryMeshes++;
+      }
       for (const seam of record.edges ?? []) if (seam?.mesh)
         draws.push({ mesh: seam.mesh, model, shadow: false });
     }
@@ -164,6 +177,8 @@ export class WorldAtlasScene extends FlightScene {
     this.renderedFeatures = renderedFeatures;
     this.renderedRoadMeshes = renderedRoadMeshes;
     this.buildingCount = buildings;
+    this.treeCount = trees;
+    this.sceneryMeshes = sceneryMeshes;
     frame.draws = draws.concat(frame.draws);
     frame.landmarkAnchors = this.labelPoints.map(point =>
       ({ name: point.name, position: [localX(point.x), point.y, point.z - oz] }));
@@ -430,6 +445,66 @@ export class WorldAtlasScene extends FlightScene {
     }
   }
 
+  updateScenery(changed, budget, altitude, balanced) {
+    const x = this.x, z = this.z, active = this.groundAt(x, z);
+    const ground = active ? sampleAtlasTile(active, wrapAtlasX(x - active.x), z - active.z) : 0;
+    const ceiling = (balanced ? 1750 : 2500) + (this.sceneryVisible && this.sceneryBalanced === balanced ? 280 : 0);
+    const visible = altitude - ground <= ceiling;
+    const sx = Math.floor(x / sceneryCell), sz = Math.floor(z / sceneryCell);
+    if (changed || visible !== this.sceneryVisible || balanced !== this.sceneryBalanced ||
+        visible && (sx !== this.sceneryX || sz !== this.sceneryZ)) {
+      this.sceneryVisible = visible;
+      this.sceneryBalanced = balanced;
+      this.sceneryX = sx;
+      this.sceneryZ = sz;
+      const targets = new Map();
+      if (visible) {
+        const parts = [...this.chunks.values()].flatMap(value => value.index ? [value.index] : [])
+          .sort((a, b) => a.chunk.key.localeCompare(b.chunk.key));
+        const mapped = parts.filter(part => part.scenery.plantBounds);
+        const range = balanced ? 3300 : 5500, limit = balanced ? 8 : 18, nearest = [];
+        if (mapped.length) for (const record of this.active) {
+          if (record.tile.step > 128) continue;
+          const distance = distanceToBounds(record.bounds, x, z);
+          if (distance > range || !mapped.some(part => atlasOverlap(part.scenery.plantBounds, record.bounds))) continue;
+          nearest.push({ record, distance });
+        }
+        nearest.sort((a, b) => a.distance - b.distance || a.record.tile.step - b.record.tile.step);
+        for (let i = 0; i < Math.min(limit, nearest.length); i++) {
+          const { record } = nearest[i];
+          targets.set(record, parts.filter(part => atlasSceneryIntersects(part.bounds, record.bounds)));
+        }
+      }
+      for (const [record, previous] of this.scenery) {
+        const parts = targets.get(record);
+        if (parts && same(parts, previous.parts)) continue;
+        if (previous.mesh) this.retired.push(previous.mesh);
+        this.scenery.delete(record);
+      }
+      const job = this.sceneryJob;
+      if (job && (!targets.has(job.record) || !same(targets.get(job.record), job.parts))) {
+        job.work.return();
+        this.sceneryJob = null;
+      }
+      this.sceneryTargets = targets;
+    }
+
+    if (!visible || !budget.timeLeft()) return;
+    if (!this.sceneryJob) for (const [record, parts] of this.sceneryTargets) {
+      if (this.scenery.has(record)) continue;
+      this.sceneryJob = { record, parts, work: makeAtlasScenery(record.tile, parts) };
+      break;
+    }
+    const job = this.sceneryJob;
+    if (!job) return;
+    job.built ??= budget.advance(job.work, 256, .85);
+    if (!job.built) return;
+    const mesh = job.built.vertices ? budget.upload(this.graphics, job.built) : null;
+    if (job.built.vertices && !mesh) return;
+    this.scenery.set(job.record, { parts: job.parts, mesh, trees: job.built.trees });
+    this.sceneryJob = null;
+  }
+
   updateLabelPoints(now, changed) {
     if (!changed && now < (this.labelRefresh ?? 0) && Math.hypot(
       wrapAtlasX(this.x - this.labelX), this.z - this.labelZ) < 800) return;
@@ -521,6 +596,8 @@ export class WorldAtlasScene extends FlightScene {
       roadMeshes: this.renderedRoadMeshes ?? 0,
       roadStyle: this.mapRoads ? 'map' : 'terrain',
       buildings: this.buildingCount,
+      trees: this.treeCount ?? 0,
+      sceneryMeshes: this.sceneryMeshes ?? 0,
       landmarks: this.nearbyLandmarks,
       meshCount: this.graphics.meshes?.size,
       meshBytes: this.graphics.meshBytes,
@@ -536,12 +613,14 @@ export class WorldAtlasScene extends FlightScene {
     for (const { mesh } of this.groundCache.values()) this.graphics.releaseMesh(mesh);
     for (const { mesh } of this.seams.values()) if (mesh) this.graphics.releaseMesh(mesh);
     for (const { meshes } of this.overlays.values()) this.retired.push(...meshes);
+    for (const { mesh } of this.scenery.values()) if (mesh) this.retired.push(mesh);
     if (this.overlayJob) this.retired.push(...this.overlayJob.meshes);
     for (const mesh of this.retired) this.graphics.releaseMesh(mesh);
     this.retired.length = 0;
     this.groundJob?.iterator.return();
     for (const { work } of this.chunks.values()) work?.return();
     this.overlayJob?.work.return();
+    this.sceneryJob?.work.return();
     this.groundCache.clear();
     this.active = [];
     this.activeSet.clear();
@@ -554,9 +633,12 @@ export class WorldAtlasScene extends FlightScene {
     this.overlayTargets.clear();
     this.overlayHolds.clear();
     this.blockedOverlays.clear();
+    this.scenery.clear();
+    this.sceneryTargets.clear();
     this.chunks.clear();
     this.groundJob = null;
     this.overlayJob = null;
+    this.sceneryJob = null;
     try { this.terrain.dispose(); } finally { super.dispose(); }
   }
 }

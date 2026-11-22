@@ -10,6 +10,7 @@ public static class WorldAtlasGrid
     public const int HalfHeight = 9_961_472;
     public const int Width = 2 * HalfWidth;
     public const int Side = WorldFlightElevation.Side;
+    internal const int MaximumElevation = 10_000;
 
     public static int Step(int level) => level is >= -1 and <= 8 ? 16384 >> (level + 1)
         : throw new ArgumentOutOfRangeException(nameof(level));
@@ -57,7 +58,7 @@ public static class WorldAtlasGrid
             for (var i = 0; i < heights.Length; i++)
                 heights[i] = BinaryPrimitives.ReadInt16LittleEndian(data[(i * 2)..]);
         for (var i = 0; i < heights.Length; i++)
-            if (heights[i] is < -12000 or > 10000 || water[i] > 2)
+            if (heights[i] is < -12000 or > MaximumElevation || water[i] > 2)
                 throw new InvalidDataException("Atlas elevation has an invalid height or water code.");
     }
 }

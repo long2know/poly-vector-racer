@@ -55,7 +55,8 @@ function fixture(world = atlasWorld) {
 
 const compactDraws = frame => frame.draws.filter(draw => draw.mesh.compact);
 const terrainDraws = frame => compactDraws(frame).filter(draw => draw.mesh.vertices.length === 32 * 32 * 60);
-const overlays = frame => compactDraws(frame).filter(draw => !terrainDraws(frame).includes(draw));
+const sceneryDraws = frame => compactDraws(frame).filter(draw => draw.atlasScenery);
+const overlays = frame => compactDraws(frame).filter(draw => !draw.atlasScenery && !terrainDraws(frame).includes(draw));
 const points = (mesh, start = 0, stop = mesh.vertices.length) => {
   const result = [];
   for (let i = start; i < stop; i += 10) result.push([...mesh.vertices.slice(i, i + 3)]);
@@ -120,6 +121,30 @@ test('Sacred Valley elevations stay earthy while tropical summits and polar grou
     assert.ok(r < .5 && g > b && g < .5, 'tropical valley facets should not inherit an indiscriminate snow palette');
   }
   for (const ice of [summit, polar]) assert.ok(ice.vertices[6] > .7 && ice.vertices[8] > ice.vertices[6]);
+  scene.dispose();
+});
+
+test('coastal shelves shade the classified water without changing the dry facets or wrapping color at the date line', () => {
+  const { scene, terrain } = fixture();
+  const water = (_, z) => Number(z >= 13);
+  terrain.tiles = [tile('east-bank', 32, half - 1024, 0, () => 0, water),
+    tile('west-bank', 32, -half, 0, () => 0, water)];
+  const frame = stepUntil(scene, frame => terrainDraws(frame).length === 2, state({ x: half - 1 }));
+  const [east, west] = terrainDraws(frame).map(draw => draw.mesh.vertices);
+  const cell = 12 * 32 * 60;
+  assert.equal(east[cell + 9], 5, 'the two-wet-vertex triangle remains water');
+  assert.equal(east[cell + 39], 0, 'the one-wet-vertex triangle remains dry');
+  assert.ok(east[cell + 7] > east[cell + 17] + .1, 'the wet facet greens into the same shoreline corner');
+  const colours = (vertices, x) => {
+    const result = new Map();
+    for (let i = 0; i < vertices.length; i += 10) if (vertices[i] === x && Math.abs(vertices[i + 2] - 400) > 20)
+      result.set(`${vertices[i + 2]}/${vertices[i + 9]}`, [...vertices.slice(i + 6, i + 9)]);
+    return result;
+  };
+  const a = colours(east, 1024), b = colours(west, 0);
+  assert.deepEqual(a, b, 'one global tone field supplies both sides of the wrap');
+  assert.ok(new Set([...a.values()].map(colour => colour.join(','))).size > 8,
+    'a flat coast no longer renders a single color per material');
   scene.dispose();
 });
 
@@ -189,6 +214,161 @@ test('global roads stay visible outside a ready detail patch, without double dra
 });
 
 const footprint = (x, z, size = 32) => [[x, z], [x + size, z], [x + size, z + size], [x, z + size]];
+
+const outline = (ring, count) => ring.flatMap(([x, z], i) => {
+  const [nx, nz] = ring[(i + 1) % ring.length];
+  return Array.from({ length: count }, (_, n) =>
+    [Math.round(x + (nx - x) * n / count), Math.round(z + (nz - z) * n / count)]);
+});
+
+test('mapped long-ring woodland and park crowns rise from the rendered terrain, leaving streams, roads and lawns open', t => {
+  t.mock.method(performance, 'now', () => 0);
+  const { scene, terrain, graphics } = fixture();
+  const north = 6086656, flying = state({ z: north + 240 });
+  const forest = outline([[26, 24], [980, 24], [980, 540], [610, 540], [610, 880], [26, 880]], 12);
+  terrain.tiles = [tile('temperate-ridge', 32, 0, north, (x, z) => 22 + x * 2 + z * 3, x => x >= 27 ? 2 : 0)];
+  const rows = [
+    ['landuse', 'forest', null, 'osm', forest],
+    ['landuse', 'park', null, 'osm', [[635, 565], [1000, 565], [1000, 995], [635, 995]]],
+    ['landuse', 'grass', null, 'osm', footprint(318, 578, 155)],
+    ['road', 'primary', null, 'osm', [[0, 256], [1024, 256]]],
+    ['road', 'local', null, 'osm', [[0, 930], [575, 930]]],
+    ['building', 'residential', null, 'osm', footprint(323, 345, 92)],
+  ];
+  terrain.features = [{ key: 'woodland-detail', level: 5, x: 0, z: north, span: 1024, rows }];
+  const first = stepUntil(scene, frame => sceneryDraws(frame).length === 1 && scene.diagnostics().buildings === 1, flying);
+  const [{ mesh: foliage }] = sceneryDraws(first), [{ mesh: ground }] = terrainDraws(first);
+  assert.ok(overlays(first).some(({ mesh }) => points(mesh).some(([x, y, z]) =>
+    x === 26 && z === 24 && Math.abs(y - faceHeight(ground, x, z, 32) - .3) < 1e-5)),
+  'the mapped forest floor follows the bounded terrain facets beneath the full-detail ring');
+  const drawn = points(foliage), stems = new Set();
+  const forestShade = new Set();
+  let park = 0;
+  const inBox = (x, z, x0, z0, x1, z1) => x >= x0 && z >= z0 && x <= x1 && z <= z1;
+  for (let i = 0; i < drawn.length; i += 3) {
+    const face = drawn.slice(i, i + 3);
+    for (const [x, y, z] of face) {
+      assert.ok(x < 27 * 32, 'the entire crown and its trunk stay away from wet terrain');
+      assert.ok(Math.abs(z - 256) > 8, 'no silhouette crosses the mapped primary road');
+      assert.ok(!inBox(x, z, 323, 345, 415, 437), 'crowns do not overlap an attributed footprint');
+      const elevation = faceHeight(ground, x, z, 32);
+      if (y < elevation - .35) almost(y, elevation - .46, .00004);
+    }
+    const [base, stem] = face;
+    if (base[1] >= faceHeight(ground, base[0], base[2], 32) - .35) continue;
+    const [x, , z] = stem, key = `${x},${z}`;
+    if (stems.has(key)) continue;
+    stems.add(key);
+    const inForest = x >= 26 && z >= 24 && (x <= 980 && z <= 540 || x <= 610 && z <= 880);
+    const inPark = inBox(x, z, 635, 565, 1000, 995);
+    assert.ok(inForest || inPark, 'the concave mapped outline and bare surroundings are honored');
+    assert.ok(!inBox(x, z, 318, 578, 473, 733), 'mapped grass makes a meadow within the woodland');
+    if (inPark) park++;
+  }
+  for (let i = 0; i < foliage.vertices.length; i += 30) if (foliage.vertices[i + 7] > .19)
+    forestShade.add(foliage.vertices[i + 7]);
+  assert.ok(stems.size > 65 && park >= 4 && forestShade.size > 12,
+    `a visible stand and open park copses have varied canopy faces: ${stems.size} trees, ${park} park, ${forestShade.size} shades`);
+  assert.equal(stems.size, scene.diagnostics().trees);
+  assert.ok(drawn.some(([x, y, z]) => y - faceHeight(ground, x, z, 32) > 23), 'woodland has a substantial skyline');
+  assert.ok(drawn.every(([x, y, z]) => y - faceHeight(ground, x, z, 32) < 38), 'temperate crowns are not oversized props');
+  assert.ok(scene.diagnostics().renderWork.peakUploadBytes <= 160 * 1024);
+  const rebased = scene.update(state({ x: 1024.4, z: north + 240 }), 1 / 60);
+  assert.equal(sceneryDraws(rebased)[0].mesh, foliage, 'origin recentering does not build different tree sites');
+  assert.equal(sceneryDraws(rebased)[0].model[12] + 2048, sceneryDraws(first)[0].model[12]);
+
+  terrain.features.push({ ...terrain.features[0], key: 'overlapping-licensed-pack' });
+  const duplicated = stepUntil(scene, frame => sceneryDraws(frame).length === 1 &&
+    sceneryDraws(frame)[0].mesh !== foliage, flying);
+  assert.deepEqual(sceneryDraws(duplicated)[0].mesh.vertices, foliage.vertices,
+    'duplicate cover polygons and reordered input do not multiply trees or alter the geometry');
+  assert.ok(graphics.released.has(foliage));
+  scene.dispose();
+  assert.equal(graphics.meshBytes, 0);
+});
+
+test('altitude and quality keep only bounded scenery batches, with reproducible geometry after descent or refinement', t => {
+  t.mock.method(performance, 'now', () => 0);
+  const { scene, terrain, graphics } = fixture();
+  const parent = tile('scenery-parent', 64, 0, 0, () => 20);
+  const children = [[0, 0], [1024, 0], [0, 1024], [1024, 1024]].map(([x, z], i) =>
+    tile(`scenery-child${i}`, 32, x, z, () => 40));
+  const forest = footprint(10, 10, 2034), distant = footprint(4098, 10, 1010);
+  const farGround = tile('scenery-distant', 32, 4096, 0, () => 20);
+  terrain.tiles = [parent, farGround];
+  terrain.features = [{ key: 'stand', level: 5, x: 0, z: 0, span: 8192, rows: [
+    ['landuse', 'forest', null, 'osm', forest], ['landuse', 'forest', null, 'osm', distant],
+  ] }];
+  let frame = stepUntil(scene, frame => sceneryDraws(frame).length === 2);
+  const [coarse, far] = sceneryDraws(frame).map(draw => draw.mesh);
+  graphics.quality = 'balanced';
+  frame = scene.update(state(), 1 / 60);
+  assert.deepEqual(sceneryDraws(frame).map(draw => draw.mesh), [coarse], 'balanced retains the nearby batch, not the distant one');
+  assert.ok(graphics.released.has(far));
+  const high = state({ y: 2400 });
+  for (let i = 0; i < 10; i++) assert.equal(sceneryDraws(scene.update(high, 1 / 60)).length, 0);
+  assert.ok(graphics.released.has(coarse), 'above the quality-specific altitude band the optional mesh is released');
+  frame = stepUntil(scene, frame => sceneryDraws(frame).length === 1);
+  assert.deepEqual(sceneryDraws(frame)[0].mesh.vertices, coarse.vertices);
+
+  terrain.tiles = [...children, farGround];
+  frame = stepUntil(scene, frame => {
+    const draws = sceneryDraws(frame);
+    const ground = terrainDraws(frame);
+    for (const draw of draws) {
+      const owner = ground.find(tile => tile.model === draw.model);
+      assert.ok(owner, 'an optional layer never survives its GPU ground owner');
+      assert.ok(points(draw.mesh).every(([, y]) => y >= owner.mesh.vertices[1] - .47),
+        'no parent foliage stays behind at the old ground height after the terrain handoff');
+    }
+    assert.ok(scene.diagnostics().renderWork.uploadBytes <= 160 * 1024);
+    return draws.length === 4;
+  });
+  const close = sceneryDraws(frame).find(draw => draw.model[12] === 0 && draw.model[14] === 0);
+  const roots = (vertices, base) => {
+    const locations = new Set();
+    for (let i = 0; i < vertices.length; i += 30) if (vertices[i + 1] < base - .3)
+      locations.add(`${vertices[i + 10]},${vertices[i + 12]}`);
+    return locations;
+  };
+  const before = roots(coarse.vertices, 20), after = roots(close.mesh.vertices, 40);
+  assert.ok([...before].filter(root => after.has(root)).length > 24,
+    'refinement retains nested world sites while rooting them at the new local relief');
+  assert.ok(sceneryDraws(frame).every(draw => points(draw.mesh).every(([, y]) => y > 39 && y < 72)));
+  scene.dispose();
+  assert.equal(graphics.meshBytes, 0);
+});
+
+test('date-line woodland keeps its ground ownership and honors a mapped line from the adjacent chunk', t => {
+  t.mock.method(performance, 'now', () => 0);
+  const { scene, terrain } = fixture();
+  terrain.tiles = [tile('scenery-east-bank', 32, half - 1024, 0), tile('scenery-west-bank', 32, -half, 0)];
+  terrain.features = [
+    { key: 'scene-east', x: half - 1024, z: 0, span: 1024, rows: [
+      ['landuse', 'forest', null, 'osm', footprint(0, 0, 1024)],
+      ['road', 'motorway', null, 'osm', [[1024, 0], [1024, 1024]]],
+    ] },
+    { key: 'scene-west', x: -half, z: 0, span: 1024, rows: [
+      ['landuse', 'forest', null, 'osm', footprint(0, 0, 1024)],
+    ] },
+  ];
+  const east = stepUntil(scene, frame => sceneryDraws(frame).length === 2, state({ x: half - .25 }));
+  const west = scene.update(state({ x: -half + .25 }), 1 / 60);
+  assert.deepEqual(sceneryDraws(west).map(draw => [draw.mesh, draw.model[12]]),
+    sceneryDraws(east).map(draw => [draw.mesh, draw.model[12]]), 'neither side re-seeds or re-uploads at the seam');
+  for (const draw of sceneryDraws(west)) {
+    const localX = points(draw.mesh).map(([x]) => x + draw.model[12]);
+    assert.ok(localX.every(x => Math.abs(x) > 12), 'no crown skirts the motorway even on the opposite side of the wrap');
+    assert.ok(localX.some(x => Math.abs(x) < 110), 'only the mapped corridor is cleared, not its surrounding woodland');
+  }
+  const [roadChunk] = terrain.features, oldOpposite = sceneryDraws(west).find(draw => draw.model[12] === 0);
+  terrain.features[0] = { ...roadChunk, rows: roadChunk.rows.slice(0, 1) };
+  const cleared = stepUntil(scene, frame => sceneryDraws(frame).some(draw =>
+    draw.model[12] === 0 && draw.mesh !== oldOpposite.mesh), state({ x: -half + .25 }));
+  const opposite = sceneryDraws(cleared).find(draw => draw.model[12] === 0);
+  assert.ok(points(opposite.mesh).some(([x]) => x < 12), 'the corridor is absent when the adjacent source line is absent');
+  scene.dispose();
+});
 
 test('OSM L5 height extrudes roofs and walls from the drawn ground while legacy buildings and point labels survive', () => {
   const { scene, terrain } = fixture();

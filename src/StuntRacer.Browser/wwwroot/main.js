@@ -11,7 +11,7 @@ import { WorldDriveScene, loadSeattleDrive, seattleRegion } from './world-drive-
 import { FlightLandmarkLabels } from './flight-landmark-labels.js';
 import { DuelFlightScene, TrainingFlightScene } from './training-flight-scene.js';
 import { readWorldCatalog, WorldTerrain } from './world-terrain.js';
-import { atlasCoordinates, readAtlasBase, readAtlasCatalog, WorldAtlasTerrain } from './world-atlas.js';
+import { atlasCoordinates, readAtlasBase, readAtlasCatalog, WorldAtlasTerrain, wrapAtlasX } from './world-atlas.js';
 import { CityScene } from './city-scene.js';
 import { ArcadeYardScene } from './arcade-yard-scene.js';
 
@@ -35,6 +35,7 @@ let sourcePackageText = null;
 let originalFlightPackageText = null;
 let worldCatalog, selectedDeparture = 'boeing';
 let atlasData, selectedAtlasDeparture, selectedAtlasPreset;
+let atlasFlight = false;
 let worldAircraftProfiles = [], selectedAircraft = 'f18', worldAircraft = null, mapRoads = false;
 let seattleDriveUnavailable = 'No World Flight terrain package is configured.';
 let displayedDrivePlan, displayedDriveRevision;
@@ -72,6 +73,15 @@ const flightModeChoices = {
   'flight-world': 'flight:world',
   'flight-atlas': 'flight:atlas',
 };
+const atlasVoyages = {
+  atlantic: { name: 'Atlantic / New York to London', origin: { name: 'New York / JFK', lon: -73.7781, lat: 40.6413 },
+    destination: { lonDeg: -0.4543, latDeg: 51.47 } },
+  pacific: { name: 'Pacific / Tokyo to San Francisco', origin: { name: 'Tokyo / Haneda', lon: 139.7798, lat: 35.5494 },
+    destination: { lonDeg: -122.379, latDeg: 37.6213 } },
+};
+const atlasPilotLabels = { off: 'Off', acquiring: 'Acquiring', cruise: 'Cruise', arrived: 'Arrived' };
+const atlasVoyageId = preset => preset?.startsWith('voyage-') ? preset.slice('voyage-'.length) : '';
+const atlasCourse = degrees => `${String((Math.round(degrees) + 360) % 360).padStart(3, '0')}°`;
 const hasScanner = flight => Boolean(flight?.training || flight?.duel);
 
 function text(id, value) {
@@ -123,6 +133,7 @@ function fail(error) {
   input?.clear();
   endFlightDrag();
   $('flight-view-controls').hidden = true;
+  $('atlas-ap').hidden = true;
   $('world-aircraft-menu').disabled = true;
   landmarkLabels.clear();
   document.body.dataset.phase = 'error';
@@ -153,6 +164,9 @@ function phaseChanged() {
   if (flightPlaying()) updateFlightView();
   else resetFlightView();
   updateWorldAircraftControl();
+  $('atlas-ap').hidden = !atlasFlight || state.phase !== 'racing';
+  if ($('atlas-ap').hidden) setAtlasPanelOpen(false);
+  if (atlasFlight && state.phase === 'ready') resetAtlasPlan();
   if (state.phase === 'finished') {
     const duel = state.flight?.duel;
     $('finish-detail').hidden = !duel;
@@ -441,12 +455,13 @@ function updateFlightHud() {
   text('touch-gear', aircraft.gearDown ? 'GEAR DN' : 'GEAR UP');
   text('flight-heading', String((display?.headingDegrees ?? Math.round(readout.heading)) % 360).padStart(3, '0'));
   $('flight-ladder').setAttribute('transform', `rotate(${readout.bank.toFixed(2)}) translate(0,${(readout.pitch * 3).toFixed(2)})`);
-  const atlas = scene.world?.atlas;
+  const atlas = atlasFlight ? scene.world.atlas : null;
   const geoPosition = atlas ? atlasCoordinates(aircraft.x, aircraft.z) : null;
+  const atlasNavigation = atlas ? updateAtlasPilot(state.flight.atlasAutopilot, aircraft) : null;
   text('flight-nav', duel ? 'AMBERLINE RANGE' : training ? 'COPPERCLOUD RANGE'
     : readout.runway ? `${readout.runway.toUpperCase()} / ${(readout.range / 1852).toFixed(1)} NM`
-    : geoPosition ? `${Math.abs(geoPosition[1]).toFixed(3)}° ${geoPosition[1] < 0 ? 'S' : 'N'} / ` +
-      `${Math.abs(geoPosition[0]).toFixed(3)}° ${geoPosition[0] < 0 ? 'W' : 'E'}` : 'NO AIRFIELD IN RANGE');
+    : atlasNavigation ?? (geoPosition ? `${Math.abs(geoPosition[1]).toFixed(3)}° ${geoPosition[1] < 0 ? 'S' : 'N'} / ` +
+      `${Math.abs(geoPosition[0]).toFixed(3)}° ${geoPosition[0] < 0 ? 'W' : 'E'}` : 'NO AIRFIELD IN RANGE'));
   const configuration = state.flight.configuration;
   text('flight-config', `${aircraft.gearDown ? 'GEAR DOWN' : 'GEAR UP'}${configuration ? configuration.hookDown ? ' / HOOK DOWN' : ' / HOOK UP' : ''}${aircraft.onGround ? ' / GROUND' : ''}`);
   text('touch-hook', configuration?.hookDown ? 'HOOK DN' : 'HOOK UP');
@@ -471,6 +486,69 @@ function updateFlightHud() {
   const [x, y] = scene.mapPoint(aircraft.x, aircraft.z);
   $('map-player').setAttribute('cx', x.toFixed(2));
   $('map-player').setAttribute('cy', y.toFixed(2));
+}
+
+function updateAtlasPilot(pilot, aircraft) {
+  const status = pilot?.status ?? 'off';
+  const dock = $('atlas-ap');
+  if (dock.dataset.status !== status) {
+    dock.dataset.status = status;
+    $('atlas-ap-take-control').disabled = status === 'off';
+  }
+  const mode = status === 'off' ? '' : pilot.mode === 'hold' ? ' Hold' : ' GPS';
+  text('atlas-ap-status', `AP ${atlasPilotLabels[status]}${mode} · ${pilot?.requestedRate ?? 1}× requested / ${pilot?.effectiveRate ?? 1}× effective`);
+  text('atlas-ap-reason', pilot?.reason ?? '');
+  const fuel = $('atlas-ap-fuel');
+  const fuelEstimate = Number.isFinite(pilot?.projectedFuel);
+  if (fuel.hidden === fuelEstimate) fuel.hidden = !fuelEstimate;
+  if (fuelEstimate) text('atlas-ap-fuel', `Estimated game fuel on arrival: ${Math.round(pilot.projectedFuel * 100)}%`);
+  if (status === 'arrived') return 'GPS DESTINATION REACHED';
+  if (pilot?.mode === 'hold' && Number.isFinite(pilot.headingDeg)) return `HOLD ${atlasCourse(pilot.headingDeg)}`;
+  if (!pilot?.target || !Number.isFinite(pilot.remainingM)) return null;
+  const bearing = pilot.headingDeg
+    ?? Math.atan2(wrapAtlasX(pilot.target.x - aircraft.x), pilot.target.z - aircraft.z) * 180 / Math.PI;
+  const nm = pilot.remainingM / 1852;
+  return `GPS ${atlasCourse(bearing)} / ${nm.toFixed(nm < 20 ? 1 : 0)} NM`;
+}
+
+function setAtlasPanelOpen(open) {
+  const panel = $('atlas-ap-panel');
+  panel.hidden = !open;
+  if (open) panel.scrollTop = 0;
+  $('atlas-ap-button').setAttribute('aria-expanded', String(open));
+  document.body.dataset.atlasPlan = open ? 'open' : 'closed';
+  if (!open) $('atlas-ap-error').hidden = true;
+}
+
+function updateAtlasPlanFields() {
+  const route = $('atlas-ap-mode').value === 'route';
+  const custom = route && $('atlas-ap-destination').value === 'custom';
+  $('atlas-ap-route').hidden = $('atlas-ap-destination').disabled = !route;
+  $('atlas-ap-hold').hidden = $('atlas-ap-heading').disabled = route;
+  $('atlas-ap-coordinates').hidden = $('atlas-ap-coordinates').disabled = !custom;
+}
+
+function resetAtlasPlan() {
+  $('atlas-ap-panel').reset();
+  const voyage = atlasVoyageId(selectedAtlasPreset);
+  if (voyage) $('atlas-ap-destination').value = voyage;
+  updateAtlasPlanFields();
+}
+
+function sendAtlasCommand(command) {
+  if (!ready || trackBusy || !atlasFlight || state?.phase !== 'racing') return false;
+  try {
+    api.AtlasFlightCommand(JSON.stringify(command));
+    $('atlas-ap-error').hidden = true;
+    return true;
+  } catch (error) {
+    if ($('atlas-ap-panel').hidden) toast(error.message);
+    else {
+      text('atlas-ap-error', error.message);
+      $('atlas-ap-error').hidden = false;
+    }
+    return false;
+  }
 }
 
 function updateTrainingHud(training) {
@@ -579,6 +657,7 @@ async function startRun(restart = false) {
     input.clear();
     api.Command(restart ? 'restart' : 'start');
     if (state.flight) {
+      if (atlasFlight && restart) resetAtlasPlan();
       state = JSON.parse(api.Observe());
       phaseChanged();
       input.setFlightThrottle(state.flight.aircraft.throttle);
@@ -758,6 +837,7 @@ function configureTrack(track) {
   const scanner = hasScanner(state.flight);
   const original = compatibility.flightSourceActive === true;
   const atlas = flying && Boolean(track.world.atlas);
+  atlasFlight = atlas;
   const world = flying && Boolean(track.terrain) && !atlas;
   worldAircraft = world || atlas ? track.aircraft : null;
   scene = drive ? new WorldDriveScene(graphics, track.world, track.terrain)
@@ -770,6 +850,7 @@ function configureTrack(track) {
     : city ? new CityScene(graphics, road, track.world) : new RaceScene(graphics, road);
   if (!flying) scene.setVehicleStyle(vehicleStyle);
   if (world || atlas) scene.setMapRoads(supportsMapRoads() && mapRoads);
+  if (atlas) resetAtlasPlan();
   landmarkLabels.clear(true);
   document.body.dataset.vehicle = flying ? 'flight' : 'racing';
   document.body.dataset.flightSource = original ? 'original' : 'authored';
@@ -1158,6 +1239,10 @@ async function loadWorldFlight(departure, aircraftId = selectedAircraft) {
 function populateAtlasDepartures() {
   const field = $('atlas-departure');
   field.replaceChildren(new Option('Custom coordinates', 'custom'));
+  const voyages = document.createElement('optgroup');
+  voyages.label = 'Cruise voyages';
+  for (const [id, voyage] of Object.entries(atlasVoyages)) voyages.append(new Option(voyage.name, `voyage-${id}`));
+  field.append(voyages);
   const groups = new Map();
   for (const preset of atlasData.catalog.presets) {
     const pack = preset.key.split('/')[0];
@@ -1172,7 +1257,15 @@ function populateAtlasDepartures() {
   field.value = selectedAtlasPreset;
   $('atlas-lon').value = selectedAtlasDeparture.lon;
   $('atlas-lat').value = selectedAtlasDeparture.lat;
-  $('atlas-heading').value = String(Math.round(selectedAtlasDeparture.heading * 180 / Math.PI));
+  const heading = String(Math.round(selectedAtlasDeparture.heading * 180 / Math.PI));
+  const headings = $('atlas-heading');
+  headings.querySelector('[data-voyage-heading]')?.remove();
+  headings.value = heading;
+  if (headings.selectedIndex === -1) {
+    const option = new Option(`${heading}°`, heading, false, true);
+    option.dataset.voyageHeading = '';
+    headings.append(option);
+  }
   const credits = $('atlas-credits'), seen = new Set();
   credits.replaceChildren();
   for (const pack of atlasData.catalog.packs) for (const [name, license, url] of Object.values(pack.credits)) {
@@ -1202,11 +1295,20 @@ async function loadWorldAtlas(selection, aircraftId = selectedAircraft) {
     : selectedAtlasPreset ?? atlasData.catalog.presets[0]?.key ?? { id: 'coordinates', name: 'Equator', lon: 0, lat: 0, heading: Math.PI / 2 };
   let departure, presetId = 'custom';
   if (typeof selection === 'string') {
-    const preset = atlasData.catalog.presets.find(item => item.key === selection);
-    if (!preset) throw new Error('Unknown Atlas departure.');
-    const { id, name, lon, lat } = preset;
-    departure = { id, name, lon, lat, heading: lat === 90 ? Math.PI : lat === -90 ? 0 : Math.PI / 2 };
-    presetId = preset.key;
+    const voyageId = atlasVoyageId(selection);
+    const voyage = Object.hasOwn(atlasVoyages, voyageId) && atlasVoyages[voyageId];
+    if (voyage) {
+      const { lon, lat } = voyage.origin;
+      const { lonDeg, latDeg } = voyage.destination;
+      const deltaLon = (lonDeg - lon + 540) % 360 - 180;
+      departure = { id: selection, ...voyage.origin, heading: Math.atan2(deltaLon, latDeg - lat) };
+    } else {
+      const preset = atlasData.catalog.presets.find(item => item.key === selection);
+      if (!preset) throw new Error('Unknown Atlas departure.');
+      const { id, name, lon, lat } = preset;
+      departure = { id, name, lon, lat, heading: lat === 90 ? Math.PI : lat === -90 ? 0 : Math.PI / 2 };
+    }
+    presetId = selection;
   } else {
     departure = selection;
   }
@@ -1390,13 +1492,21 @@ function tick(now) {
       toast('Paused after a long browser stall. Resume when you are ready.');
       dt = 0;
     }
-    activeInput = input.sample(state?.phase === 'racing' ? Math.min(dt, 0.25) : 0);
+    const seconds = Math.min(dt, 0.25);
+    activeInput = input.sample(state?.phase === 'racing' ? seconds : 0);
     const simulationStart = performance.now();
-    state = JSON.parse(state?.flight
-      ? api.FlightFrame(Math.min(dt, 0.25), activeInput.roll, activeInput.pitch, activeInput.yaw,
-        activeInput.throttle, activeInput.afterburner, activeInput.brake, activeInput.assisted)
-      : api.Frame(state?.drive && !scene.hasDetailedGround(state.player) ? 0 : Math.min(dt, 0.25),
-        activeInput.steer, activeInput.throttle, activeInput.brake, activeInput.boost));
+    let next;
+    if (state?.flight) {
+      const { roll, pitch, yaw, throttle, afterburner, brake, assisted, manualIntent } = activeInput;
+      next = atlasFlight
+        ? api.AtlasFlightFrame(seconds, roll, pitch, yaw, throttle, afterburner, brake, assisted,
+          state.phase === 'racing' && manualIntent)
+        : api.FlightFrame(seconds, roll, pitch, yaw, throttle, afterburner, brake, assisted);
+    } else {
+      next = api.Frame(state?.drive && !scene.hasDetailedGround(state.player) ? 0 : seconds,
+        activeInput.steer, activeInput.throttle, activeInput.brake, activeInput.boost);
+    }
+    state = JSON.parse(next);
     simulationMs = simulationMs * 0.95 + (performance.now() - simulationStart) * 0.05;
     if (!state.player || !Number.isFinite(state.player.x) || !Number.isFinite(state.player.speed)) {
       throw new Error('The C# simulation returned an invalid vehicle snapshot.');
@@ -1417,7 +1527,7 @@ function tick(now) {
       text('load-status', 'ENGINE READY / CLICK TO DRIVE');
       document.body.dataset.ready = 'true';
     }
-    updateHud(Math.min(dt, 0.25));
+    updateHud(seconds);
     audio.update(state, activeInput);
     cpuMs = cpuMs * 0.95 + (performance.now() - begin) * 0.05;
     if (now - fpsTime >= 1000) {
@@ -1529,6 +1639,56 @@ function bind() {
     const heading = Number($('atlas-heading').value) * Math.PI / 180;
     void selectGameMode('flight-atlas', { id: 'coordinates', name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`, lon, lat, heading });
   });
+  $('atlas-ap-button').addEventListener('click', () => {
+    const open = $('atlas-ap-panel').hidden;
+    setAtlasPanelOpen(open);
+    (open ? $('atlas-ap-mode') : canvas).focus({ preventScroll: true });
+  });
+  $('atlas-ap').addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || $('atlas-ap-panel').hidden) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setAtlasPanelOpen(false);
+    canvas.focus({ preventScroll: true });
+  });
+  $('atlas-ap-mode').addEventListener('change', updateAtlasPlanFields);
+  $('atlas-ap-destination').addEventListener('change', updateAtlasPlanFields);
+  $('atlas-ap-panel').addEventListener('submit', event => {
+    event.preventDefault();
+    if (!event.currentTarget.reportValidity()) return;
+    const mode = $('atlas-ap-mode').value;
+    const command = { action: 'engage', mode, altitudeM: $('atlas-ap-altitude').valueAsNumber,
+      speedMps: $('atlas-ap-speed').valueAsNumber, rate: Number($('atlas-ap-rate').value) };
+    if (mode === 'route') {
+      const key = $('atlas-ap-destination').value;
+      command.destination = key === 'custom'
+        ? { lonDeg: $('atlas-ap-lon').valueAsNumber, latDeg: $('atlas-ap-lat').valueAsNumber }
+        : atlasVoyages[key]?.destination;
+    } else if ($('atlas-ap-heading').value) command.headingDeg = $('atlas-ap-heading').valueAsNumber;
+    if (sendAtlasCommand(command)) {
+      setAtlasPanelOpen(false);
+      canvas.focus({ preventScroll: true });
+    }
+  });
+  $('atlas-ap-rate').addEventListener('change', event => {
+    const pilot = state?.flight?.atlasAutopilot;
+    if (pilot && pilot.status !== 'off') sendAtlasCommand({ action: 'setRate', rate: Number(event.target.value) });
+  });
+  $('atlas-ap-take-control').addEventListener('click', () => {
+    if (sendAtlasCommand({ action: 'takeControl' })) {
+      setAtlasPanelOpen(false);
+      canvas.focus({ preventScroll: true });
+    }
+  });
+  if (globalThis.ResizeObserver) {
+    const atlasDock = document.querySelector('.atlas-ap-dock');
+    const observer = new ResizeObserver(() => {
+      const height = atlasDock.offsetHeight;
+      if (height) document.body.style.setProperty('--atlas-ap-dock-height', `${height}px`);
+    });
+    observer.observe(atlasDock);
+    window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
+  }
   $('world-aircraft-menu').addEventListener('change', event => {
     const id = event.target.value;
     if (!worldAircraft || state?.phase !== 'ready' || !worldAircraftProfiles.some(profile => profile.id === id)) {
@@ -1822,6 +1982,7 @@ async function boot() {
       !api?.StuntCourses || !api?.SelectStuntCourse ||
       !api?.SelectWorldFlight || !api?.WorldFlightAircraft || !api?.AddWorldTerrainTile || !api?.RemoveWorldTerrainTile ||
       !api?.LoadWorldAtlasBase || !api?.SelectWorldAtlas || !api?.InstallWorldAtlasTerrain || !api?.RemoveWorldAtlasTerrain ||
+      !api?.AtlasFlightFrame || !api?.AtlasFlightCommand ||
       !api?.SelectSeattleDrive || !api?.SeattleDriveAreaInfo || !api?.SeattleDrivePlan) {
     throw new Error('The compiled C# simulation exports are missing. No JavaScript gameplay fallback was started.');
   }
@@ -1887,7 +2048,8 @@ async function boot() {
       worldAtlasConfigurationAvailable: Boolean(sourceConfiguration.worldAtlasUrl),
       geographicFlight: worldAircraft && !scene.world?.atlas ? { ...scene.diagnostics(), renderedAircraftId: scene.aircraftId } : null,
       worldAtlas: scene.world?.atlas ? { ...scene.diagnostics(), renderedAircraftId: scene.aircraftId,
-        departure: scene.world.atlas.destination, coordinates: atlasCoordinates(state.player.x, state.player.z),
+        departure: { ...scene.world.atlas.destination, lon: scene.world.atlas.lon, lat: scene.world.atlas.lat },
+        coordinates: atlasCoordinates(state.player.x, state.player.z),
         terrainWaiting: state.terrainWaiting } : null,
       geographicDrive: state.drive ? { ...scene.diagnostics(), streets: scene.world.streets.length,
         detailedGround: scene.hasDetailedGround(state.player), destination: state.drive.destinationId,

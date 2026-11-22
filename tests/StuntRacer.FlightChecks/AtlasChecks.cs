@@ -68,7 +68,7 @@ internal static class AtlasChecks
             "retiring a parent atomically removes descendant contacts");
     }
 
-    private static byte[] Quartet(WorldAtlasTileKey parent, short height, byte water)
+    internal static byte[] Quartet(WorldAtlasTileKey parent, short height, byte water)
     {
         var result = new byte[4 * WorldAtlasTile.ByteLength];
         for (var i = 0; i < 4; ++i)

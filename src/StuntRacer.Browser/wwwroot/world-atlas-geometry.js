@@ -1,13 +1,15 @@
 import { Geometry } from './engine/graphics.js';
-import { clamp } from './engine/math.js';
+import { clamp, mix } from './engine/math.js';
 import { triangulate } from './engine/triangulate.js';
 import { atlasGrid, wrapAtlasX } from './world-atlas.js';
+import { atlasHash, atlasPattern, atlasTree, drawAtlasTree } from './world-atlas-scenery.js';
 
 const atlasPole = atlasGrid.halfHeight;
 const side = 33, cells = side - 1;
-const sea = [.061, .216, .302], lake = [.087, .306, .336], shore = [.27, .37, .246];
-const lowland = [.246, .375, .22], upland = [.214, .329, .209], highland = [.33, .351, .252];
-const rock = [.39, .386, .343], snow = [.78, .84, .85];
+const sea = [.057, .217, .31], lake = [.085, .293, .304];
+const seaShelf = [.093, .348, .377], lakeShelf = [.123, .379, .337], shore = [.36, .424, .263];
+const lowland = [.247, .377, .219], upland = [.216, .344, .218], highland = [.337, .365, .257];
+const rock = [.413, .393, .352], snow = [.78, .84, .85];
 
 export function atlasBounds(x, z, span) { return [x, z, x + span, z + span]; }
 export function atlasOverlap(a, b) { return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]; }
@@ -34,16 +36,34 @@ function landColour(h, slope, [snowline, treeline, foothills]) {
 export function* makeAtlasGround(tile) {
   const { step, heights, z } = tile;
   const vertices = new Float32Array(cells * cells * 60);
-  let next = 0;
-  const write = (x, y, z, nx, ny, nz, colour, material) => {
-    vertices[next++] = x; vertices[next++] = y; vertices[next++] = z;
-    vertices[next++] = nx; vertices[next++] = ny; vertices[next++] = nz;
-    vertices[next++] = colour[0]; vertices[next++] = colour[1]; vertices[next++] = colour[2];
-    vertices[next++] = material;
+  const tone = new Float32Array(side * 2);
+  const textureRow = j => {
+    const latitude = z + j * step;
+    for (let i = 0; i < side; i++) {
+      const x = tile.x + i * step;
+      tone[(j % 2) * side + i] = .51 * atlasPattern(x, latitude, 16384) +
+        .33 * atlasPattern(x, latitude, 512) + .16 * atlasPattern(x, latitude, 128) - .5;
+    }
   };
+  let next = 0;
+  const write = (x, z, row, col, nx, ny, nz, palette, wet) => {
+    const index = row * side + col, swatch = tone[(row % 2) * side + col];
+    const c = wet > 0 && !tile.water[index] ? wet === 2 ? lakeShelf : seaShelf :
+      wet === -1 && tile.water[index] ? shore : palette;
+    const texture = swatch * (wet > 0 || palette === snow ? .12 : .44);
+    vertices[next++] = x; vertices[next++] = heights[index]; vertices[next++] = z;
+    vertices[next++] = nx; vertices[next++] = ny; vertices[next++] = nz;
+    vertices[next++] = c[0] * (1 + texture * 1.24);
+    vertices[next++] = c[1] * (1 + texture * .78);
+    vertices[next++] = c[2] * (1 - texture * .34);
+    vertices[next++] = wet > 0 ? 5 : 0;
+  };
+  yield;
+  textureRow(0);
   for (let j = 0; j < cells; j++) {
     yield;
     const south = j * step, north = south + step;
+    textureRow(j + 1);
     const bands = altitudeBands(z + south + step / 2);
     for (let i = 0; i < cells; i++) {
       const west = i * step, east = west + step;
@@ -54,13 +74,13 @@ export function* makeAtlasGround(tile) {
         const nx = -(first ? ne - hm : hm - sw) / step;
         const nz = -(first ? hm - sw : ne - hm) / step;
         const slope2 = nx * nx + nz * nz, norm = 1 / Math.sqrt(1 + slope2);
-        const wet = wetFacet(tile, a, mid, c), material = wet > 0 ? 5 : 0;
-        const colour = wet === 2 ? lake : wet === 1 ? sea : wet === -1 ? shore :
+        const wet = wetFacet(tile, a, mid, c);
+        const colour = wet === 2 ? lake : wet === 1 ? sea :
           landColour((sw + ne + hm) / 3, Math.sqrt(slope2), bands);
-        write(west, sw, south, nx * norm, norm, nz * norm, colour, material);
-        if (first) write(west, hm, north, nx * norm, norm, nz * norm, colour, material);
-        write(east, ne, north, nx * norm, norm, nz * norm, colour, material);
-        if (!first) write(east, hm, south, nx * norm, norm, nz * norm, colour, material);
+        write(west, south, j, i, nx * norm, norm, nz * norm, colour, wet);
+        if (first) write(west, north, j + 1, i, nx * norm, norm, nz * norm, colour, wet);
+        write(east, north, j + 1, i + 1, nx * norm, norm, nz * norm, colour, wet);
+        if (!first) write(east, south, j, i + 1, nx * norm, norm, nz * norm, colour, wet);
       }
     }
   }
@@ -70,10 +90,13 @@ export function* makeAtlasGround(tile) {
 const atlasFeatureTriangles = 4096;
 
 class FeatureGeometry {
-  data = new Float32Array(atlasFeatureTriangles * 30);
   floatCount = 0;
 
-  triangle(a, b, c, colour, material) {
+  constructor(triangles = atlasFeatureTriangles) {
+    this.data = new Float32Array(triangles * 30);
+  }
+
+  triangle(a, b, c, colour, material, tint) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
     const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
     const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
@@ -83,14 +106,15 @@ class FeatureGeometry {
       let i = this.floatCount;
       v[i++] = point[0]; v[i++] = point[1]; v[i++] = point[2];
       v[i++] = nx * unit; v[i++] = ny * unit; v[i++] = nz * unit;
-      v[i++] = colour[0]; v[i++] = colour[1]; v[i++] = colour[2]; v[i++] = material;
+      const t = tint ? tint(point[0], point[1], point[2]) : 1;
+      v[i++] = colour[0] * t; v[i++] = colour[1] * t; v[i++] = colour[2] * t; v[i++] = material;
       this.floatCount = i;
     }
   }
 
-  quad(a, b, c, d, colour, material) {
-    this.triangle(a, b, c, colour, material);
-    this.triangle(a, c, d, colour, material);
+  quad(a, b, c, d, colour, material, tint) {
+    this.triangle(a, b, c, colour, material, tint);
+    this.triangle(a, c, d, colour, material, tint);
   }
 }
 
@@ -147,15 +171,95 @@ const rails = {
 const areas = {
   building: [8, [.65, .66, .59]], commercial: [15, [.55, .62, .63]],
   industrial: [10, [.58, .54, .49]], residential: [7, [.64, .56, .46]],
-  forest: [0, [.156, .337, .193]], park: [0, [.23, .421, .233]], grass: [0, [.32, .433, .245]],
+  forest: [0, [.146, .315, .186]], park: [0, [.238, .402, .212]], grass: [0, [.341, .443, .233]],
 };
+const cover = Object.freeze({ park: 1, forest: 2, grass: 3 });
 const pointRanks = { landmark: 0, airport: 1, place: 2 };
-const maxRows = 4096, maxPoints = 32768, maxRing = 40, maxFootprint = 8192;
+const maxRows = 4096, maxPoints = 32768, maxRing = 40, maxCoverRing = 2048, maxFootprint = 8192;
 const lineTiers = 3, lineGroups = 7;
+const sceneryBin = 1024, sceneryPad = 42, sceneryTriangles = 2096, siteSpacing = 32;
+const sceneryCell = (i, j) => i * 32768 + j;
+const sitePhases = [[0, 0], [2, 2], [1, 1], [3, 3], [0, 2], [2, 0], [0, 1], [2, 3],
+  [1, 0], [3, 2], [0, 3], [2, 1], [1, 2], [3, 0], [1, 3], [3, 1]];
+
+function* surfaceOutline(path) {
+  if (path.length <= maxRing) return path;
+  const [x, z] = path[0];
+  let far = 0, distance = 0, probes = 0;
+  for (let i = 1; i < path.length; i++) {
+    if (i % 48 === 0) yield;
+    const [u, v] = path[i], d = (u - x) ** 2 + (v - z) ** 2;
+    if (d > distance) { far = i; distance = d; }
+  }
+  const section = function* (a, b) {
+    const [ax, az] = path[a], [bx, bz] = path[b % path.length];
+    let at = a, error = 0;
+    for (let i = a + 1; i < b; i++) {
+      if (++probes % 48 === 0) yield;
+      if (probes > 24000) return { error: Infinity };
+      const [x, z] = path[i], d = distanceToSegment2(x, z, ax, az, bx, bz);
+      if (d > error) { at = i; error = d; }
+    }
+    return { a, b, at, error };
+  };
+  const keep = [0, far], sections = [yield* section(0, far), yield* section(far, path.length)];
+  while (true) {
+    let best = 0;
+    for (let i = 1; i < sections.length; i++) if (sections[i].error > sections[best].error) best = i;
+    const { a, b, at, error } = sections[best];
+    if (error <= 2 ** 2 || keep.length === maxRing) {
+      // Large rings still retain their full outlines for planting; only the floor can be simplified.
+      return error <= 10 ** 2 && keep.length >= 3 ? keep.sort((a, b) => a - b).map(i => path[i]) : null;
+    }
+    if (!Number.isFinite(error)) return null;
+    keep.push(at);
+    sections.splice(best, 1, yield* section(a, at), yield* section(at, b));
+  }
+}
+
+function binScenery(index, entry) {
+  const [w, s, e, n] = entry.bounds;
+  const i0 = Math.floor(w / sceneryBin), j0 = Math.floor(s / sceneryBin);
+  const i1 = Math.floor(e / sceneryBin), j1 = Math.floor(n / sceneryBin);
+  if ((i1 - i0 + 1) * (j1 - j0 + 1) > 4) {
+    index.broad.push(entry);
+    return;
+  }
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+    const key = sceneryCell(i, j);
+    let bucket = index.bins.get(key);
+    if (!bucket) index.bins.set(key, bucket = []);
+    bucket.push(entry);
+  }
+}
+
+function* sceneryEntries(index, bounds) {
+  const [w, s, e, n] = bounds, seen = new Set();
+  for (const entry of index.broad) yield entry;
+  for (let j = Math.floor(s / sceneryBin); j <= Math.floor(n / sceneryBin); j++)
+    for (let i = Math.floor(w / sceneryBin); i <= Math.floor(e / sceneryBin); i++)
+      for (const entry of index.bins.get(sceneryCell(i, j)) ?? []) {
+        if (seen.has(entry)) continue;
+        seen.add(entry);
+        yield entry;
+      }
+}
+
+function sceneryShift(bounds, tileBounds) {
+  const dx = (bounds[0] + bounds[2] - tileBounds[0] - tileBounds[2]) * .5;
+  return wrapAtlasX(dx) - dx;
+}
+
+export function atlasSceneryIntersects(bounds, tileBounds) {
+  const shift = sceneryShift(bounds, tileBounds);
+  return bounds[0] + shift - sceneryPad <= tileBounds[2] && bounds[2] + shift + sceneryPad >= tileBounds[0] &&
+    bounds[1] - sceneryPad <= tileBounds[3] && bounds[3] + sceneryPad >= tileBounds[1];
+}
 
 export function* indexAtlasFeatures(chunk) {
   const lines = Array.from({ length: lineTiers }, () => Array.from({ length: lineGroups }, () => []));
   const buildings = [], landuse = [], labels = [], byHeight = new Map();
+  const scenery = { bins: new Map(), broad: [], plantBounds: null };
   let points = 0, lineMask = 0, highest = 0;
   for (let i = 0; i < Math.min(chunk.rows.length, maxRows); i++) {
     yield;
@@ -178,8 +282,11 @@ export function* indexAtlasFeatures(chunk) {
     }
     const line = kind === 'road' && Object.hasOwn(roads, style) ? roads[style] :
       kind === 'rail' && Object.hasOwn(rails, style) ? rails[style] : null;
-    const area = (kind === 'building' || kind === 'landuse') && Object.hasOwn(areas, style) ? areas[style] : null;
-    if (!(line && path.length >= 2 || area && path.length >= 3 && path.length <= maxRing)) continue;
+    const validArea = kind === 'building' && Object.hasOwn(areas, style) && areas[style][0] ||
+      kind === 'landuse' && Object.hasOwn(cover, style);
+    const area = validArea ? areas[style] : null;
+    if (!(line && path.length >= 2 || area && path.length >= 3 &&
+        path.length <= (kind === 'landuse' ? maxCoverRing : maxRing))) continue;
     const bounds = [Infinity, Infinity, -Infinity, -Infinity];
     let valid = true;
     for (let j = 0; j < path.length; j++) {
@@ -192,6 +299,16 @@ export function* indexAtlasFeatures(chunk) {
     }
     if (!valid) continue;
     const entry = { kind, source, path, bounds, style: line ?? area };
+    if (kind === 'landuse') {
+      entry.cover = cover[style];
+      entry.surface = yield* surfaceOutline(path);
+      if (source === 'osm' && style !== 'grass') {
+        const p = scenery.plantBounds ??= [...bounds];
+        p[0] = Math.min(p[0], bounds[0]); p[1] = Math.min(p[1], bounds[1]);
+        p[2] = Math.max(p[2], bounds[2]); p[3] = Math.max(p[3], bounds[3]);
+      }
+    }
+    binScenery(scenery, entry);
     if (line) {
       const overview = chunk.level === 0 || chunk.level === undefined && chunk.span >= 262144;
       const tier = source === 'natural-earth' ? 0 : overview ? 1 : 2, group = line[4];
@@ -221,7 +338,7 @@ export function* indexAtlasFeatures(chunk) {
     }
   }
   return { chunk, bounds: atlasBounds(chunk.x, chunk.z, chunk.span), lines, lineMask,
-    buildings: ranked.length ? ranked.concat(buildings) : buildings, taggedCount: ranked.length, landuse, labels };
+    buildings: ranked.length ? ranked.concat(buildings) : buildings, taggedCount: ranked.length, landuse, labels, scenery };
 }
 
 function validAtlasPoint(p, span) {
@@ -252,15 +369,15 @@ const toGround = (p, chunk, tile) => [p[0] + chunk.x - tile.x, p[1] + chunk.z - 
 const pointsBounds = p => p.reduce((b, q) =>
   [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])], [Infinity, Infinity, -Infinity, -Infinity]);
 
-function appendTop(mesh, points, colour, material, limit) {
+function appendTop(mesh, points, colour, material, limit, tint) {
   for (let i = 1; i < points.length - 1 && mesh.floatCount < limit; i++) {
     const a = points[0], b = points[i], c = points[i + 1];
     const area = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
-    if (Math.abs(area) >= 1e-5) mesh.triangle(a, ...(area > 0 ? [b, c] : [c, b]), colour, material);
+    if (Math.abs(area) >= 1e-5) mesh.triangle(a, ...(area > 0 ? [b, c] : [c, b]), colour, material, tint);
   }
 }
 
-function* drape(mesh, tile, polygon, lift, colour, material, limit) {
+function* drape(mesh, tile, polygon, lift, colour, material, limit, tint) {
   if (polygon.length < 3) return;
   const { step } = tile, range = pointsBounds(polygon);
   const firstRow = Math.max(0, Math.floor(range[1] / step));
@@ -281,7 +398,7 @@ function* drape(mesh, tile, polygon, lift, colour, material, limit) {
         if (wetFacet(tile, a, c, a + (sign === 1 ? side : 1)) > 0) continue;
         const face = clip(cell, p => sign * (p[1] - s - p[0] + w));
         const raised = face.map(([x, z]) => [x, sampleAtlasTile(tile, x, z) + lift, z]);
-        appendTop(mesh, raised, colour, material, limit);
+        appendTop(mesh, raised, colour, material, limit, tint);
       }
     }
   }
@@ -377,6 +494,134 @@ function insideRing(points, x, z) {
   return inside;
 }
 
+function* scenerySites(sites, grid, [w, s, e, n], pad, visit, granular = false) {
+  const { pitch, west, south, cols, rows } = grid;
+  const first = Math.max(0, Math.floor((s - pad) / pitch) - south);
+  const last = Math.min(rows - 1, Math.floor((n + pad) / pitch) - south);
+  const left = Math.max(0, Math.floor((w - pad) / pitch) - west);
+  const right = Math.min(cols - 1, Math.floor((e + pad) / pitch) - west);
+  for (let j = first; j <= last; j++) {
+    yield;
+    for (let i = left; i <= right; i++) {
+      const site = sites[j * cols + i];
+      if (!site || site.blocked || site.x < w - pad || site.x > e + pad || site.z < s - pad || site.z > n + pad) continue;
+      if (granular) yield;
+      visit(site);
+    }
+  }
+}
+
+function distanceToSegment2(x, z, ax, az, bx, bz) {
+  const dx = bx - ax, dz = bz - az, length2 = dx * dx + dz * dz;
+  const t = length2 ? clamp(((x - ax) * dx + (z - az) * dz) / length2, 0, 1) : 0;
+  return (x - ax - t * dx) ** 2 + (z - az - t * dz) ** 2;
+}
+
+function dryCrown(tile, x, z, radius) {
+  const { step, water } = tile;
+  const left = Math.floor((x - radius) / step), right = Math.ceil((x + radius) / step);
+  const bottom = Math.floor((z - radius) / step), top = Math.ceil((z + radius) / step);
+  if (left < 0 || bottom < 0 || right > cells || top > cells) return false;
+  for (let j = bottom; j <= top; j++) for (let i = left; i <= right; i++) if (water[j * side + i]) return false;
+  return true;
+}
+
+export function* makeAtlasScenery(tile, parts) {
+  const { x, z, step } = tile, span = step * cells, bounds = atlasBounds(x, z, span);
+  const pitch = step <= 32 ? siteSpacing : step <= 64 ? 2 * siteSpacing : 4 * siteSpacing;
+  const west = Math.floor(x / pitch), south = Math.floor(z / pitch);
+  const cols = Math.ceil(bounds[2] / pitch) - west, rows = Math.ceil(bounds[3] / pitch) - south;
+  const grid = { pitch, west, south, cols, rows }, sites = new Array(cols * rows);
+  const rootHeight = (dx, dz) => sampleAtlasTile(tile, dx, dz);
+  for (let j = 0; j < rows; j++) {
+    yield;
+    for (let i = 0; i < cols; i++) {
+      // Coarser ground cuts take a subset of the same jittered world sites.
+      const gx = (west + i) * pitch / siteSpacing, gz = (south + j) * pitch / siteSpacing;
+      const u = gx * siteSpacing + siteSpacing * (.17 + .66 * atlasHash(gx, gz, 681));
+      const v = gz * siteSpacing + siteSpacing * (.17 + .66 * atlasHash(gx, gz, 439));
+      if (u >= x && u < bounds[2] && v >= z && v < bounds[3]) sites[j * cols + i] = { x: u, z: v, gx, gz, cover: 0 };
+    }
+  }
+  const blockers = [];
+  for (const part of parts) {
+    const shift = sceneryShift(part.bounds, bounds), cx = part.chunk.x + shift, cz = part.chunk.z;
+    const search = [x - shift - sceneryPad, z - sceneryPad, bounds[2] - shift + sceneryPad, bounds[3] + sceneryPad];
+    for (const entry of sceneryEntries(part.scenery, search)) {
+      yield;
+      if (!inRange(entry.bounds, search)) continue;
+      if (entry.kind !== 'landuse') {
+        blockers.push({ entry, cx, cz, shift, coarse: part.chunk.level === 0 });
+      } else if (entry.source === 'osm' && shift === 0 && atlasOverlap(entry.bounds, bounds)) {
+        yield* scenerySites(sites, grid, entry.bounds, 0, site => {
+          if (site.cover < entry.cover && insideRing(entry.path, site.x - cx, site.z - cz)) site.cover = entry.cover;
+        }, entry.path.length > 128);
+      }
+    }
+  }
+  let candidates = 0;
+  for (let i = 0; i < sites.length; i++) {
+    yield;
+    const site = sites[i];
+    if (!site) continue;
+    const forest = site.cover === cover.forest, park = site.cover === cover.park, { gx, gz } = site;
+    if (!forest && !park) { sites[i] = null; continue; }
+    const patch = .65 * atlasPattern(site.x, site.z, 128) + .35 * atlasPattern(site.x, site.z, 512);
+    const density = forest ? .65 + .29 * patch : .06 + 1.8 * clamp(patch - .27, 0, .63) ** 2;
+    if (atlasHash(gx, gz, 9127) > density) { sites[i] = null; continue; }
+    const dx = site.x - x, dz = site.z - z, y = rootHeight(dx, dz);
+    const [, treeline] = altitudeBands(site.z);
+    if (y + atlasHash(gx, gz, 37) * 190 > treeline ||
+        Math.abs(rootHeight(dx - 5, dz) - rootHeight(dx + 5, dz)) > 11 ||
+        Math.abs(rootHeight(dx, dz - 5) - rootHeight(dx, dz + 5)) > 11) { sites[i] = null; continue; }
+    const tree = atlasTree(y, site.z, forest, gx, gz);
+    if (!dryCrown(tile, dx, dz, tree.radius)) { sites[i] = null; continue; }
+    site.y = y;
+    site.tree = tree;
+    candidates++;
+  }
+  if (!candidates) return { vertices: null, trees: 0 };
+
+  for (const { entry, cx, cz, shift, coarse } of blockers) {
+    yield;
+    const { bounds: [w, s, e, n], path, kind } = entry;
+    if (kind === 'building') {
+      yield* scenerySites(sites, grid, [w + shift, s, e + shift, n], sceneryPad, site => {
+        const tx = site.x - cx, tz = site.z - cz, r2 = (site.tree.radius + 1) ** 2;
+        if (insideRing(path, tx, tz) || path.some(([a, b], i) => {
+          const [u, v] = path[(i + 1) % path.length];
+          return distanceToSegment2(tx, tz, a, b, u, v) < r2;
+        })) site.blocked = true;
+      });
+      continue;
+    }
+    const width = (coarse ? Math.max(entry.style[0], Math.min(86, step * .037)) : entry.style[0]) * 1.8 + 1;
+    for (let i = 1; i < path.length; i++) {
+      yield;
+      const [a, b] = path[i - 1], [c, d] = path[i];
+      const segment = [cx + Math.min(a, c), cz + Math.min(b, d), cx + Math.max(a, c), cz + Math.max(b, d)];
+      if (!inRange(segment, bounds, sceneryPad)) continue;
+      yield* scenerySites(sites, grid, segment, sceneryPad, site => {
+        if (distanceToSegment2(site.x - cx, site.z - cz, a, b, c, d) < (width + site.tree.radius) ** 2)
+          site.blocked = true;
+      });
+    }
+  }
+
+  const mesh = new FeatureGeometry(Math.min(sceneryTriangles, candidates * 13));
+  let trees = 0;
+  // Spread a capped forest across the tile rather than clipping the last rows off.
+  for (const [px, pz] of sitePhases)
+    for (let j = pz; j < rows; j += 4) for (let i = px; i < cols; i += 4) {
+      yield;
+      const site = sites[j * cols + i];
+      if (!site || site.blocked || mesh.floatCount + (site.tree.needle ? 11 : 13) * 30 > mesh.data.length) continue;
+      drawAtlasTree(mesh, site.x - x, site.y, site.z - z, site.tree, rootHeight);
+      trees++;
+    }
+  return { vertices: trees ? mesh.data.subarray(0, mesh.floatCount) : null, trees };
+}
+
 function* drawBuilding(mesh, tile, part, entry, limit, sampleAdjacent) {
   const [west, south, east, north] = toLocal(entry.bounds, tile), span = tile.step * cells;
   const cx = (west + east) * .5, cz = (south + north) * .5;
@@ -385,8 +630,9 @@ function* drawBuilding(mesh, tile, part, entry, limit, sampleAdjacent) {
   if (!owns(cx, cz) || !dryAt(tile, cx, cz) || Math.max(east - west, north - south) > maxFootprint) return false;
   const { points, faces } = polygonFaces(entry.path, part.chunk, tile);
   if (!faces.length) return false;
-  const colour = entry.style[1];
-  const roofColour = colour.map(c => c * 1.1), walls = colour.map(c => c * .84);
+  const colour = entry.style[1], variation = atlasHash(Math.floor(tile.x + cx), Math.floor(tile.z + cz), 510);
+  const roofColour = colour.map((c, channel) => c * (.89 + .33 * variation) + (channel === 2 ? .018 : 0));
+  const walls = colour.map(c => c * (.76 + .14 * variation));
   const floor = (x, z) => (owns(x, z) ? null : sampleAdjacent?.(tile.x + x, tile.z + z)) ?? sampleAtlasTile(tile, x, z);
   const base = points.map(([x, z]) => floor(x, z));
   let crest = Math.max(...base);
@@ -402,6 +648,7 @@ function* drawBuilding(mesh, tile, part, entry, limit, sampleAdjacent) {
     }
   }
   const top = crest + entry.height;
+  const facadeShade = (_, y) => mix(.78, 1.09, clamp((y - crest) / entry.height, 0, 1));
   const roof = points.map(([x, z]) => [x, top, z]);
   for (const face of faces) appendTop(mesh, face.map(i => roof[i]), roofColour, 0, limit);
   for (let i = 0; i < points.length && mesh.floatCount + 60 <= limit; i++) {
@@ -409,7 +656,7 @@ function* drawBuilding(mesh, tile, part, entry, limit, sampleAdjacent) {
     const next = (i + 1) % points.length, a = roof[i], b = roof[next];
     if (a[0] === b[0] && a[2] === b[2]) continue;
     const [x, , z] = a, [u, , v] = b;
-    mesh.quad([x, base[i] - .5, z], a, b, [u, base[next] - .5, v], walls, 0);
+    mesh.quad([x, base[i] - .5, z], a, b, [u, base[next] - .5, v], walls, 0, facadeShade);
   }
   return true;
 }
@@ -468,6 +715,7 @@ export function* makeAtlasFeatures(tile, parts, sampleAdjacent) {
       if (buildings >= 72 || mesh.floatCount >= buildingLimit) break;
       yield* appendBuilding(part, entry);
     }
+    const vegetationTint = (x, y, z) => .87 + .26 * atlasPattern(tile.x + x, tile.z + z, 256);
     for (const part of parts) {
       const clipTo = toLocal(part.bounds, tile);
       for (let i = part.taggedCount; i < part.buildings.length && buildings < 72 && mesh.floatCount < buildingLimit; i++) {
@@ -478,9 +726,11 @@ export function* makeAtlasFeatures(tile, parts, sampleAdjacent) {
       for (const entry of part.landuse) {
         yield;
         if (mesh.floatCount >= parkLimit) break;
-        if (!atlasOverlap(entry.bounds, bounds)) continue;
-        const { points, faces } = polygonFaces(entry.path, part.chunk, tile);
-        for (const face of faces) yield* drape(mesh, tile, clipBox(face.map(i => points[i]), clipTo), .31, entry.style[1], 0, parkLimit);
+        if (!entry.surface || !atlasOverlap(entry.bounds, bounds)) continue;
+        const { points, faces } = polygonFaces(entry.surface, part.chunk, tile);
+        const lift = entry.cover === cover.grass ? .37 : entry.cover === cover.forest ? .30 : .31;
+        for (const face of faces)
+          yield* drape(mesh, tile, clipBox(face.map(i => points[i]), clipTo), lift, entry.style[1], 0, parkLimit, vegetationTint);
       }
     }
   }

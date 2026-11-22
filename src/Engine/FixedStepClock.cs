@@ -23,15 +23,26 @@ public sealed class FixedStepClock
     public double Alpha => Math.Clamp(_accumulator / StepSeconds, 0, 1);
     public long Tick { get; private set; }
 
-    public int Advance(double seconds, Func<double, bool> tryStep)
+    public int Advance(double seconds, Func<double, bool> tryStep) =>
+        Advance(seconds, MaximumFrameSeconds, _maximumSteps, tryStep);
+
+    /// <summary>Advance simulated seconds with a per-call step budget, retaining the usual step size.</summary>
+    public int Advance(double seconds, int maximumSteps, Func<double, bool> tryStep)
+    {
+        if (maximumSteps is < 1 or > 10_000)
+            throw new ArgumentOutOfRangeException(nameof(maximumSteps));
+        return Advance(seconds, maximumSteps * StepSeconds, maximumSteps, tryStep);
+    }
+
+    private int Advance(double seconds, double frameBudget, int maximumSteps, Func<double, bool> tryStep)
     {
         ValidateDelta(seconds);
         ArgumentNullException.ThrowIfNull(tryStep);
 
         // A stall loses wall time beyond this budget, rather than banking unbounded catch-up.
-        _accumulator += Math.Min(seconds, MaximumFrameSeconds);
+        _accumulator += Math.Min(seconds, frameBudget);
         var steps = 0;
-        while (_accumulator + StepSeconds * 1e-9 >= StepSeconds && steps < _maximumSteps)
+        while (_accumulator + StepSeconds * 1e-9 >= StepSeconds && steps < maximumSteps)
         {
             if (!tryStep(StepSeconds))
             {
@@ -47,9 +58,12 @@ public sealed class FixedStepClock
         return steps;
     }
 
+    /// <summary>Discard unstepped time without resetting the authoritative tick count.</summary>
+    public void DiscardRemainder() => _accumulator = 0;
+
     public void Reset()
     {
-        _accumulator = 0;
+        DiscardRemainder();
         Tick = 0;
     }
 

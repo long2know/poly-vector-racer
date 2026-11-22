@@ -37,6 +37,7 @@ export function readFlightGamepad(pad) {
 const drivingKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight']);
 const flightKeys = new Set(['KeyQ', 'KeyE', 'KeyB', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'Backspace']);
+const flightTouches = new Set(['right', 'left', 'throttle-up', 'throttle-down', 'brake', 'boost']);
 const actions = { KeyC: 'camera', KeyR: 'recover', KeyP: 'pause', Escape: 'pause',
   KeyM: 'mute', KeyF: 'fullscreen', Enter: 'start', KeyH: 'help', KeyG: 'gear', KeyK: 'hook', KeyV: 'flight-hud',
   KeyT: 'scan', F3: 'stats' };
@@ -58,6 +59,8 @@ export class Input {
   flightHandling = 'assisted';
   flightThrottle = 0;
   pendingTouchTrim = 0;
+  pendingKeyFlightIntent = false;
+  pendingTouchFlightIntent = false;
   previous = {};
   layout = 'standard';
   connected = null;
@@ -85,6 +88,8 @@ export class Input {
       if (drivingKeys.has(event.code) || action ||
           this.mode === 'flight' && flightKeys.has(event.code)) event.preventDefault();
       this.keys.add(event.code);
+      if (!event.repeat && this.mode === 'flight' && (drivingKeys.has(event.code) || flightKeys.has(event.code)))
+        this.pendingKeyFlightIntent = true;
       if (!event.repeat && action) onAction(action);
     }, { signal });
     window.addEventListener('keyup', event => this.keys.delete(event.code), { signal });
@@ -97,8 +102,10 @@ export class Input {
         event.preventDefault();
         button.setPointerCapture(event.pointerId);
         const control = button.dataset.control;
-        if (this.mode === 'flight' && !this.touches.has(control))
-          this.pendingTouchTrim += throttleTrim[control] ?? 0;
+        if (this.mode === 'flight' && flightTouches.has(control)) {
+          this.pendingTouchFlightIntent = true;
+          if (!this.touches.has(control)) this.pendingTouchTrim += throttleTrim[control] ?? 0;
+        }
         this.touchPointers.set(event.pointerId, { control, element: button, startY: event.clientY });
         this.syncTouch();
         canvas.focus({ preventScroll: true });
@@ -129,6 +136,7 @@ export class Input {
           Math.max(1, rect.width * 0.42), -1, 1), 0.04);
         this.touchPitch = this.mode === 'flight' ? deadzone(clamp((rect.top + rect.height / 2 - event.clientY) /
           Math.max(1, rect.height * 0.42), -1, 1), 0.04) : 0;
+        if (this.mode === 'flight' && (this.touchSteer || this.touchPitch)) this.pendingTouchFlightIntent = true;
         this.drawTouchSteering();
       };
       this.steeringPad.addEventListener('pointerdown', event => {
@@ -177,6 +185,7 @@ export class Input {
     this.touchPointers.clear();
     this.turboPointers.clear();
     this.pendingTouchTrim = 0;
+    this.pendingTouchFlightIntent = false;
     this.steeringPointer = null;
     this.touchSteer = 0;
     this.touchPitch = 0;
@@ -209,6 +218,7 @@ export class Input {
 
   clear() {
     this.keys.clear();
+    this.pendingKeyFlightIntent = false;
     this.clearTouch();
     this.previous = {};
     this.blocked = true;
@@ -248,20 +258,24 @@ export class Input {
       if (this.blocked) gamepad = readFlightGamepad(null);
       const pitch = Number(held('ArrowDown', 'KeyS')) - Number(held('ArrowUp', 'KeyW'));
       const demandedPitch = Math.abs(pitch) > Math.abs(this.touchPitch) ? pitch : this.touchPitch;
-      const throttleRate = Number(held('Equal', 'NumpadAdd')) - Number(held('Minus', 'NumpadSubtract'))
-        + gamepad.throttle - gamepad.brake
-        + Number(this.touches.has('throttle-up')) - Number(this.touches.has('throttle-down'));
+      const trimUp = Number(held('Equal', 'NumpadAdd')) + Number(this.touches.has('throttle-up'));
+      const trimDown = Number(held('Minus', 'NumpadSubtract')) + Number(this.touches.has('throttle-down'));
+      const throttleRate = trimUp - trimDown + gamepad.throttle - gamepad.brake;
       const touchStep = seconds > 0 ? this.pendingTouchTrim * 0.05 : 0;
       this.pendingTouchTrim = 0;
       this.flightThrottle = clamp(this.flightThrottle + touchStep + throttleRate * Math.min(seconds, 0.25) * 0.5, 0, 1);
+      const roll = Math.abs(steer) > Math.abs(gamepad.steer) ? steer : gamepad.steer;
+      const finalPitch = Math.abs(demandedPitch) > Math.abs(gamepad.pitch) ? demandedPitch : gamepad.pitch;
+      const yaw = held('KeyE') ? 1 : held('KeyQ') ? -1 : gamepad.yaw;
+      const afterburner = held('Space', 'ShiftLeft', 'ShiftRight') || this.touches.has('boost') || gamepad.boost;
+      const brake = held('Backspace', 'KeyB') || this.touches.has('brake') || gamepad.airBrake;
+      // Include taps between frames and trim at either limit; the stored lever alone is not input.
+      const manualIntent = Boolean(this.pendingKeyFlightIntent || this.pendingTouchFlightIntent ||
+        roll || finalPitch || yaw || afterburner || brake || trimUp || trimDown || gamepad.throttle || gamepad.brake);
+      this.pendingKeyFlightIntent = this.pendingTouchFlightIntent = false;
       return {
-        roll: Math.abs(steer) > Math.abs(gamepad.steer) ? steer : gamepad.steer,
-        pitch: Math.abs(demandedPitch) > Math.abs(gamepad.pitch) ? demandedPitch : gamepad.pitch,
-        yaw: held('KeyE') ? 1 : held('KeyQ') ? -1 : gamepad.yaw,
-        throttle: this.flightThrottle,
-        afterburner: held('Space', 'ShiftLeft', 'ShiftRight') || this.touches.has('boost') || gamepad.boost,
-        brake: held('Backspace', 'KeyB') || this.touches.has('brake') || gamepad.airBrake,
-        assisted: this.flightHandling === 'assisted',
+        roll, pitch: finalPitch, yaw, throttle: this.flightThrottle, afterburner, brake,
+        assisted: this.flightHandling === 'assisted', manualIntent,
       };
     }
     return {

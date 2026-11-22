@@ -210,6 +210,61 @@ test('flight keyboard throttle is elapsed-time based and pulling back is nose-up
   });
 });
 
+test('flight takeover sees deliberate keyboard input at throttle limits, but not a stored lever or cockpit controls', () => {
+  withTouch((input, _buttons, _pad, _thumb, { actions }) => {
+    const key = (type, code, target) => {
+      const event = Object.assign(new Event(type, { cancelable: true }), { code });
+      if (target) Object.defineProperty(event, 'target', { value: target });
+      return window.dispatchEvent(event);
+    };
+    input.setMode('flight', 1);
+    assert.equal(input.sample(0.25).manualIntent, false, 'a set throttle is not fresh input');
+    key('keydown', 'Equal');
+    assert.equal(input.sample(0.25).manualIntent, true, 'holding trim at full throttle must still take over');
+    key('keyup', 'Equal');
+    assert.equal(input.sample(0.25).manualIntent, false, 'released controls no longer request takeover');
+    for (const code of ['ArrowLeft', 'KeyS', 'KeyE', 'KeyB', 'Space', 'NumpadAdd']) {
+      key('keydown', code);
+      key('keyup', code);
+      const { manualIntent, throttle } = input.sample(0.25);
+      assert.equal(manualIntent, true, `${code} must survive a tap between frames`);
+      assert.equal(throttle, 1, 'taking over does not reset the stored lever');
+    }
+    key('keydown', 'KeyC');
+    assert.deepEqual(actions, [['camera']]);
+    assert.equal(input.sample(0.25).manualIntent, false, 'camera input is not aircraft movement');
+
+    const editor = Object.assign(new TouchElement(), { closest: () => true });
+    assert.equal(key('keydown', 'ArrowDown', editor), true, 'form controls keep their normal arrow behavior');
+    assert.equal(input.sample().manualIntent, false, 'editing an autopilot field must not take over');
+    key('keydown', 'KeyD');
+    window.dispatchEvent(new Event('blur'));
+    assert.equal(input.sample().manualIntent, false, 'blur clears unsampled and held keyboard input');
+  });
+});
+
+test('flight takeover sees touch trim taps and pad movement, not a centered finger or resized contacts', () => {
+  withTouch((input, buttons, pad) => {
+    input.setMode('flight', 0);
+    pointer(pad, 'pointerdown', 1, 80, 40);
+    assert.equal(input.sample(0.25).manualIntent, false, 'a centered stick does not command the aircraft');
+    pointer(pad, 'pointermove', 1, 110, 26);
+    assert.equal(input.sample(0.25).manualIntent, true);
+    pointer(pad, 'pointerup', 1);
+    assert.equal(input.sample(0.25).manualIntent, false);
+
+    pointer(buttons['throttle-down'], 'pointerdown', 2);
+    pointer(buttons['throttle-down'], 'pointerup', 2);
+    const { throttle, manualIntent } = input.sample(0.25);
+    assert.equal(throttle, 0);
+    assert.equal(manualIntent, true, 'a trim tap at idle still requests takeover');
+    assert.equal(input.sample(0.25).manualIntent, false);
+    pointer(buttons.boost, 'pointerdown', 3);
+    window.dispatchEvent(new Event('resize'));
+    assert.equal(input.sample(0.25).manualIntent, false, 'orientation resize clears pending touch intent');
+  });
+});
+
 test('number row and numpad snap the flight view without changing flight axes or capturing racing digits', () => {
   withTouch((input, _buttons, _pad, _thumb, { actions }) => {
     const key = (code, options = {}) => window.dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }), { code, ...options }));
@@ -228,7 +283,7 @@ test('number row and numpad snap the flight view without changing flight axes or
       ['flight-view', 'forward-right'], ['flight-view', 'rear-left'], ['flight-view', 'forward'],
     ]);
     assert.deepEqual(input.sample(0.2), {
-      roll: 0, pitch: 0, yaw: 0, throttle: 0.3, afterburner: false, brake: false, assisted: true,
+      roll: 0, pitch: 0, yaw: 0, throttle: 0.3, afterburner: false, brake: false, assisted: true, manualIntent: false,
     });
     key('KeyD');
     key('KeyQ');
@@ -275,9 +330,24 @@ test('flight handling applies to keyboard, touch and gamepad without changing ax
 test('flight gamepad trims throttle in either direction and ignores held triggers during pause and focus loss', () => {
   withTouch((input, _buttons, _pad, _thumb, { setGamepad }) => {
     const buttons = Array.from({ length: 17 }, () => ({ value: 0 }));
-    setGamepad({ connected: true, axes: [0, 0, 0], buttons });
+    const axes = [0.09, 0, -0.08];
+    setGamepad({ connected: true, axes, buttons });
     input.setMode('flight', 0.35);
-    assert.equal(input.sample().throttle, 0.35);
+    const neutral = input.sample();
+    assert.equal(neutral.throttle, 0.35);
+    assert.equal(neutral.manualIntent, false, 'stick drift must not take over');
+    axes[2] = 0.5;
+    assert.equal(input.sample().manualIntent, true, 'real rudder movement takes over');
+    axes[2] = 0;
+    buttons[2].value = 1;
+    assert.equal(input.sample().manualIntent, true, 'airbrake takes over');
+    buttons[2].value = 0;
+    input.setFlightThrottle(1);
+    buttons[7].value = 1;
+    const clamped = input.sample(0.25);
+    assert.equal(clamped.throttle, 1);
+    assert.equal(clamped.manualIntent, true, 'a held trigger at full throttle still takes over');
+    input.setFlightThrottle(0.35);
     buttons[7].value = 0.7;
     const raised = input.sample(0.25).throttle;
     assert.ok(raised > 0.35);
@@ -288,13 +358,17 @@ test('flight gamepad trims throttle in either direction and ignores held trigger
     assert.ok(lower.throttle < raised);
     assert.equal(lower.brake, false, 'LT adjusts throttle, not the airbrake');
     window.dispatchEvent(new Event('blur'));
-    assert.equal(input.sample(0.25).throttle, lower.throttle);
+    const blurred = input.sample(0.25);
+    assert.equal(blurred.throttle, lower.throttle);
+    assert.equal(blurred.manualIntent, false, 'blurred held trigger cannot take over');
     buttons[6].value = 0;
     assert.equal(input.sample(0.25).throttle, lower.throttle);
     input.onAction = action => { assert.equal(action, 'pause'); input.clear(); };
     buttons[9].value = 1;
     buttons[7].value = 1;
-    assert.equal(input.sample(0.25).throttle, lower.throttle, 'pausing must not integrate a stale trigger from that frame');
+    const paused = input.sample(0.25);
+    assert.equal(paused.throttle, lower.throttle, 'pausing must not integrate a stale trigger from that frame');
+    assert.equal(paused.manualIntent, false, 'pausing also discards takeover intent from that trigger');
   });
 });
 
