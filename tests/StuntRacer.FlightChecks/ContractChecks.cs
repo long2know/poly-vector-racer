@@ -88,7 +88,12 @@ internal static class ContractChecks
 
     public static void FixedStepSchedules()
     {
-        var input = new FlightInput(0.04, 0.02, 0.015, 0.7, false, false);
+        FixedStepSchedules(new FlightInput(0.04, 0.02, 0.015, 0.7, false, false));
+        FixedStepSchedules(new FlightInput(1, 0, 0, .35, false, false) { Assisted = true });
+    }
+
+    private static void FixedStepSchedules(FlightInput input)
+    {
         FlightSnapshot? baseline = null;
         foreach (var rate in new[] { 60, 120, 144 })
         {
@@ -104,7 +109,7 @@ internal static class ContractChecks
                 Check.Near(snapshot.Time, baseline.Time, 0, $"{rate} Hz simulated time");
             }
             baseline = snapshot;
-            Console.WriteLine($"TRACE {rate}Hz {FlightScenarios.Describe(snapshot)}");
+            Console.WriteLine($"TRACE {rate}Hz assisted={input.Assisted} {FlightScenarios.Describe(snapshot)}");
         }
     }
 

@@ -28,7 +28,7 @@ internal static class FlightScenarios
             0, 1, true, false);
     }
 
-    public static ApproachResult Approach(bool gearDown = true, bool flare = true)
+    public static ApproachResult Approach(bool gearDown = true, bool flare = true, bool assisted = false)
     {
         var simulation = AirStart();
         if (!gearDown)
@@ -52,7 +52,7 @@ internal static class FlightScenarios
             var throttle = Math.Clamp(0.2 + (83 - aircraft.Speed) * 0.025, 0, 0.55);
             previous = aircraft;
             lowestApproachSink = Math.Min(lowestApproachSink, aircraft.VerticalSpeed);
-            simulation.Advance(Step, new FlightInput(0, pitchInput, 0, throttle, false, aircraft.Speed > 87));
+            simulation.Advance(Step, new FlightInput(0, pitchInput, 0, throttle, false, aircraft.Speed > 87) { Assisted = assisted });
         }
         return new ApproachResult(simulation, previous, lowestApproachSink);
     }

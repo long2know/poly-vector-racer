@@ -8,6 +8,12 @@ internal static class TrainingChecks
 
     public static void ScanBothProps()
     {
+        ScanBothProps(Cruise);
+        ScanBothProps(Cruise with { Assisted = true });
+    }
+
+    private static void ScanBothProps(FlightInput input)
+    {
         var range = new FlightTagRange();
         var initial = range.Snapshot.Training!;
         var drone = initial.Props.Single(prop => prop.Kind == "drone");
@@ -29,7 +35,7 @@ internal static class TrainingChecks
         Check.That(range.Snapshot.Training is { Score: 0, CooldownSeconds: > 0, InRangeId: null },
             "An out-of-range scan uses cooldown but must not award completion.");
 
-        var nearDrone = FlyUntilInRange(range, drone.Id);
+        var nearDrone = FlyUntilInRange(range, drone.Id, input);
         var movedDrone = nearDrone.Training!.Props.Single(prop => prop.Id == drone.Id);
         Check.That(movedDrone.Position != drone.Position, "The drone must move on native simulation time.");
         Check.That(nearDrone.Training.Props.Single(prop => prop.Id == beacon.Id).Position == beacon.Position,
@@ -42,21 +48,21 @@ internal static class TrainingChecks
         range.Command("scan");
         Check.That(range.Snapshot.Training!.Score == 1, "A repeat scan cannot score again on the same drone.");
 
-        FlyUntilInRange(range, beacon.Id);
+        FlyUntilInRange(range, beacon.Id, input);
         range.Command("scan");
         var complete = range.Snapshot;
         Check.That(complete.Phase == "finished" && !complete.Aircraft.Crashed &&
             complete.Training is { Score: 2, Remaining: 0 } && complete.Training.Props.All(prop => prop.Tagged),
             "A distinct scan tags the actual beacon and clears the range without a crash.");
         range.Command("resume");
-        Check.That(range.Advance(.25, Cruise).Time == complete.Time, "The cleared range stops the run clock.");
+        Check.That(range.Advance(.25, input).Time == complete.Time, "The cleared range stops the run clock.");
     }
 
     public static void PauseAndReplay()
     {
         var range = new FlightTagRange();
         range.Command("start");
-        var near = FlyUntilInRange(range, "cloud-hopper");
+        var near = FlyUntilInRange(range, "cloud-hopper", Cruise);
         range.Command("pause");
         var paused = range.Snapshot;
         range.Command("scan");
@@ -82,11 +88,11 @@ internal static class TrainingChecks
             "Garage returns to a clean range briefing.");
     }
 
-    private static FlightSnapshot FlyUntilInRange(FlightTagRange range, string id)
+    private static FlightSnapshot FlyUntilInRange(FlightTagRange range, string id, FlightInput input)
     {
         for (var frame = 0; frame < 600; frame++)
         {
-            var snapshot = range.Advance(1.0 / 60, Cruise);
+            var snapshot = range.Advance(1.0 / 60, input);
             if (snapshot.Training is { CooldownSeconds: 0 } training && training.InRangeId == id)
                 return snapshot;
         }

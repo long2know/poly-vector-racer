@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { verifyArcadeActivities } from './arcade-activities.mjs';
+import { verifyFlightTurns } from './flight-turns.mjs';
 import { verifySeattleDrive } from './seattle-drive.mjs';
 import { verifyStuntCourses } from './stunt-courses.mjs';
 
@@ -13,6 +14,7 @@ const seattleFocus = /^seattle-drive(?:-legacy|-no-package)?$/.test(focus ?? '')
 const geographicSpeedFocus = focus === 'world-flight-speed';
 const arcadeFocus = focus === 'arcade-activities';
 const stuntCoursesFocus = focus === 'stunt-courses';
+const flightTurnsFocus = focus === 'flight-turns';
 const artifactRoot = resolve('artifacts/browser');
 await mkdir(artifactRoot, { recursive: true });
 const output = await mkdtemp(resolve(artifactRoot, 'run-'));
@@ -1306,7 +1308,7 @@ try {
   assert.equal(evidence.initial.runtime, '.NET 10 browser-WASM');
   assert.equal(evidence.initial.vehicleStyle, 'ev6');
   assert.ok(evidence.initial.completedFrames > 0);
-  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['flight', 'original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !flightTurnsFocus && !['flight', 'original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
     'world-flight-settings', 'flight-training'].includes(focus)) {
   await tap('F3');
   await waitFor('!document.querySelector("#stats").hidden && /FPS.*GPU-completed/.test(document.querySelector("#stats").textContent)');
@@ -1735,13 +1737,18 @@ try {
     await waitFor('stuntRacer.diagnostics().ready && stuntRacer.diagnostics().compatibility.trackData === "authored"');
   }
   }
-  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['flight', 'original-flight', 'geographic-flight', 'world-flight-settings', 'flight-training'].includes(focus)) await verifyDrivingExperiences();
-  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !flightTurnsFocus && !['flight', 'original-flight', 'geographic-flight', 'world-flight-settings', 'flight-training'].includes(focus)) await verifyDrivingExperiences();
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !flightTurnsFocus && !['original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
     'world-flight-settings', 'flight-training'].includes(focus)) await verifyFlight();
-  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight', 'world-flight-settings',
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !flightTurnsFocus && !['experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight', 'world-flight-settings',
     'flight-training'].includes(focus)) await verifyOriginalFlight();
   if (!focus || focus === 'geographic-flight') await verifyGeographicFlight();
   if (!focus || focus === 'flight-training') await verifyFlightTraining();
+  if (flightTurnsFocus) evidence.flightTurns = await verifyFlightTurns({
+    evaluate, observe, waitFor, click, select, tap, key, setPhone: setFlightPhone, virtualPad, flightInput, screenshot,
+    touchDown: point => cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] }),
+    touchUp: () => cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }),
+  });
   if (!focus || arcadeFocus) evidence.arcade = await verifyArcadeActivities({
     evaluate, waitFor, click, touchTap, tap, key, select, observe, setPhone: setFlightPhone, verifyTouchTargets,
     virtualPad, driveUntil, flightInput, screenshot,

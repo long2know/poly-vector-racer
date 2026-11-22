@@ -55,6 +55,7 @@ export class Input {
   touchEnabled = true;
   mode = 'racing';
   scanEnabled = false;
+  flightHandling = 'assisted';
   flightThrottle = 0;
   pendingTouchTrim = 0;
   previous = {};
@@ -201,6 +202,11 @@ export class Input {
     this.flightThrottle = clamp(value, 0, 1);
   }
 
+  setFlightHandling(value) {
+    if (value !== 'assisted' && value !== 'direct') throw new Error(`Unknown flight handling: ${value}`);
+    this.flightHandling = value;
+  }
+
   clear() {
     this.keys.clear();
     this.clearTouch();
@@ -255,6 +261,7 @@ export class Input {
         throttle: this.flightThrottle,
         afterburner: held('Space', 'ShiftLeft', 'ShiftRight') || this.touches.has('boost') || gamepad.boost,
         brake: held('Backspace', 'KeyB') || this.touches.has('brake') || gamepad.airBrake,
+        assisted: this.flightHandling === 'assisted',
       };
     }
     return {

@@ -216,6 +216,12 @@ also work). It stays set on release and through a pause or focus loss. Hold
 **Space/Shift** for afterburner at high power, **B/Backspace** for brakes, and
 press **G** for gear. Original flight adds **K** for the arrestor hook.
 
+In **Modern flight**, **Assisted** is the default: bank and hold to turn, then
+ease off to level the wings. Supersonic turns are much wider; release afterburner
+and reduce throttle and speed before turning back. No flaps are needed. Select
+**Controls → Flight Handling → Direct** for full roll authority and aerobatics.
+The handling choice lasts for the browser session and does not affect Amiga flight.
+
 On a controller, the left stick banks/pitches, right-stick X is rudder, and
 **RT/LT** set throttle. **A** is afterburner, **X** is airbrake, left-stick
 click toggles gear, and **LB** toggles the original hook. On touch, drag the
@@ -610,6 +616,9 @@ Block Rush in Chrome, with keyboard, touch, and a virtual gamepad. It needs no
 external content.
 `STUNT_BROWSER_FOCUS=world-flight-speed` runs the focused SR-71 Mach 3 check
 at the Cascades departure without preceding mobile or sightseeing scenes.
+`STUNT_BROWSER_FOCUS=flight-turns` uses the hosted Atlas to check that keyboard,
+touch and gamepad reverse the actual flight path and level off in Assisted,
+and that Direct still allows a full roll.
 `STUNT_BROWSER_FOCUS=seattle-drive` checks the real ZIP's street map, scenery,
 sidewalk activity, GPS arrival, pause, replanning and keyboard takeover in Chrome. The related
 `seattle-drive-legacy` and `seattle-drive-no-package` focuses check unavailable
