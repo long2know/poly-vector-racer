@@ -68,7 +68,7 @@ public sealed class FlightSimulation : IFlightSession
         var id = aircraftId == "default" ? DefaultAircraftId : aircraftId;
         Aircraft = WorldAircraft.FirstOrDefault(profile => profile.Id == id)
             ?? throw new ArgumentException($"Unknown World Flight aircraft '{aircraftId}'.", nameof(aircraftId));
-        _worldJet = world.Geography is not null;
+        _worldJet = world.Geography is not null || world.Atlas is not null;
         if (!_worldJet && Aircraft.Id != DefaultAircraftId)
             throw new ArgumentException("Alternate aircraft are only available in World Flight.", nameof(aircraftId));
         PlaceOnRunway();
@@ -99,7 +99,7 @@ public sealed class FlightSimulation : IFlightSession
                 {
                     _phase = Phase.Countdown;
                     _countdown = 3;
-                    _message = World.Geography is not null && !_onGround
+                    _message = _worldJet && !_onGround
                         ? "Scenic departure in 3 seconds." : "Runway departure in 3 seconds.";
                 }
                 break;
@@ -131,7 +131,7 @@ public sealed class FlightSimulation : IFlightSession
                 var garage = command.Trim().Equals("garage", StringComparison.OrdinalIgnoreCase);
                 _phase = garage ? Phase.Ready : Phase.Countdown;
                 _countdown = garage ? 0 : 3;
-                if (World.Geography is null)
+                if (!_worldJet)
                     _message = garage ? "Runway ready — choose an experience or take off." : "Runway departure in 3 seconds.";
                 else if (!garage)
                     _message = _onGround ? "Runway departure in 3 seconds." : "Scenic departure in 3 seconds.";
@@ -142,15 +142,15 @@ public sealed class FlightSimulation : IFlightSession
                 _countdown = 0;
                 if (_recoveries < int.MaxValue)
                     _recoveries++;
-                _message = World.Geography is null ? "Recovered to Bay Runway — start when ready. Fuel retained."
+                _message = !_worldJet ? "Recovered to Bay Runway — start when ready. Fuel retained."
                     : "Returned to the selected departure. Fuel retained.";
                 break;
             case "air-start":
                 if (_phase is Phase.Ready or Phase.Paused or Phase.Crashed)
                 {
                     PlaceOnRunway();
-                    if (World.Geography is { } geography)
-                        BeginAirborne(geography.Destination);
+                    if ((World.Atlas?.Destination ?? World.Geography?.Destination) is { } departure)
+                        BeginAirborne(departure);
                     else
                     {
                         _position = new FlightVec(0, 258, -4000);
@@ -162,7 +162,7 @@ public sealed class FlightSimulation : IFlightSession
                     }
                     _phase = Phase.Flying;
                     _countdown = 0;
-                    _message = World.Geography is null ? "Air-start training — gear down, Bay Runway ahead."
+                    _message = !_worldJet ? "Air-start training — gear down, Bay Runway ahead."
                         : "Scenic air start — you have control.";
                 }
                 break;
@@ -302,12 +302,19 @@ public sealed class FlightSimulation : IFlightSession
                 _velocity = default;
         }
         _position += _velocity * dt;
+        if (World.Atlas is not null)
+        {
+            const int pole = WorldAtlasGrid.HalfHeight;
+            _position = _position with { X = WorldAtlasGrid.Wrap(_position.X), Z = Math.Clamp(_position.Z, -pole, pole) };
+            if (_position.Z >= pole && _velocity.Z > 0 || _position.Z <= -pole && _velocity.Z < 0)
+                _velocity = _velocity with { Z = 0 };
+        }
         if (!_onGround)
             _airborneSeconds += dt;
 
         ResolveContact();
         var limit = World.Geography is null ? 200_000 : 10_000_000;
-        if (_phase == Phase.Flying &&
+        if (World.Atlas is null && _phase == Phase.Flying &&
             (Math.Abs(_position.X) > limit || Math.Abs(_position.Z) > limit || _position.Y > 20_000))
         {
             _position = new FlightVec(
@@ -398,12 +405,13 @@ public sealed class FlightSimulation : IFlightSession
         _position = _position with { Y = contactY };
         if (sample.IsWater)
         {
-            Crash(World.Geography is null ? "Water impact — recover to Bay Runway." : "Water impact — return to the departure point.");
+            Crash(!_worldJet ? "Water impact — recover to Bay Runway." : "Water impact — return to the departure point.");
             return;
         }
         if (sample.LandingSurface is null)
         {
-            Crash("Terrain impact — land on the paved runway.");
+            Crash(World.Atlas is null ? "Terrain impact — land on the paved runway."
+                : "Terrain impact — return to the departure point.");
             return;
         }
         if (!_gearDown)
@@ -478,17 +486,19 @@ public sealed class FlightSimulation : IFlightSession
         _gForce = 1;
         _terrainWaiting = false;
         SetAttitude(World.RunwayHeading, 0, 0);
-        if (World.Geography is { } geography)
+        if ((World.Atlas?.Destination ?? World.Geography?.Destination) is { } departure)
         {
-            if (World.LandingSurfaces.Count == 0) BeginAirborne(geography.Destination);
+            if (World.LandingSurfaces.Count == 0) BeginAirborne(departure);
             _message = _onGround ? "Boeing Field — runway ready." : "Scenic departure ready.";
         }
     }
 
     private void BeginAirborne(WorldFlightDestination destination)
     {
-        _position = new FlightVec(destination.X, destination.Altitude, destination.Z);
-        var speed = destination.Altitude > 2000 ? 175 : 145;
+        var altitude = World.Atlas is null ? destination.Altitude
+            : Math.Max(destination.Altitude, World.Sample(destination.X, destination.Z).Height + 1400);
+        _position = new FlightVec(destination.X, altitude, destination.Z);
+        var speed = altitude > 2000 ? 175 : 145;
         _velocity = new FlightVec(Math.Sin(destination.Heading) * speed, 0, Math.Cos(destination.Heading) * speed);
         SetAttitude(destination.Heading, 0.025, 0);
         _throttle = 0.47;

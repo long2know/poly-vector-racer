@@ -16,7 +16,7 @@ internal sealed class HardDrivingTrial(StuntParkCourse.Course course)
             return false;
         _passed++;
         _lastBonus = _passed == course.Gates.Length ? 0 :
-            4 + (course.Gates[_passed].S - course.Gates[_passed - 1].S) / 28;
+            course.CheckpointSlack + (course.Gates[_passed].S - course.Gates[_passed - 1].S) / course.CheckpointPace;
         _budget += _lastBonus;
         return true;
     }

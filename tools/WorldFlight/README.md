@@ -10,11 +10,11 @@ Generate and run it from the repository root (Python 3.11+):
 python3 -m pip install --target .tools/world-flight-deps -r tools/WorldFlight/requirements.txt
 python3 tools/WorldFlight/fetch_sources.py --output artifacts/world-flight/raw
 PYTHONPATH=.tools/world-flight-deps python3 tools/WorldFlight/build.py \
-  --input artifacts/world-flight/raw --output artifacts/world-flight/package
-python3 tools/WorldFlight/check.py artifacts/world-flight/package
+  --input artifacts/world-flight/raw --output artifacts/world-atlas/seattle
+python3 tools/WorldFlight/check.py artifacts/world-atlas/seattle
 bash scripts/build.sh
 BASE_URL=/poly-vector-racer \
-  STUNT_WORLD_FLIGHT="$PWD/artifacts/world-flight/package/manifest.json" bash scripts/run.sh
+  STUNT_WORLD_ATLAS="$PWD/artifacts/world-atlas" bash scripts/run.sh
 ```
 
 The generator takes a new output directory and writes the manifest only after
@@ -25,11 +25,10 @@ download paid up front by the browser. `sources.json` in the raw cache records
 the upstream URLs, and the package's `receipt.json` records exact input hashes.
 Use `fetch_sources.py --only-osm --output artifacts/world-flight/raw` to fetch
 map files independently, e.g. when upgrading an existing raw elevation cache.
-Keep this package outside the static bundle. A container can optionally mount it
-under `/app/data/world-flight` through
-[`deploy/compose.world-flight.yaml`](../../deploy/compose.world-flight.yaml).
-Set `WORLD_FLIGHT_DIR` to the absolute package directory, or put the package
-under `${DOCKER_DATA}/games/poly-vector-racer/world-flight`.
+Keep this package outside the static bundle. The host looks for the extracted
+package at `seattle/manifest.json` inside the configured scenery directory,
+including packages without a road layer. A present `seattle.zip` takes
+precedence; a damaged ZIP is rejected rather than falling back to extraction.
 
 ## Package as a portable ZIP
 
@@ -38,8 +37,8 @@ beyond the standard library):
 
 ```bash
 python3 tools/WorldFlight/pack.py \
-  --input artifacts/world-flight/package \
-  --output artifacts/world-flight/world-flight.zip
+  --input artifacts/world-atlas/seattle \
+  --output artifacts/world-atlas/seattle.zip
 ```
 
 The packer checks the manifest, receipt, declared tiles and scenery files. It
@@ -50,24 +49,24 @@ existing files. Use the finished ZIP after the command reports its size and
 SHA-256. To check geographic quality and tile seams before packaging, run
 `check.py` on the compiled directory as shown above.
 
-Copy just `world-flight.zip`. Set `STUNT_WORLD_FLIGHT` to its absolute path,
-outside the static bundle, and start the host:
+If you already have `world-flight.zip`, copy or rename it to exactly
+`seattle.zip` in the scenery directory; there is no archive conversion. Set
+`STUNT_WORLD_ATLAS` to that directory's absolute path and start the host:
 
 ```bash
 BASE_URL=/poly-vector-racer \
-  STUNT_WORLD_FLIGHT=/absolute/path/world-flight.zip bash scripts/run.sh
+  STUNT_WORLD_ATLAS=/absolute/path/scenery bash scripts/run.sh
 ```
 
 The host indexes the archive when it starts and reads individual files on
 demand without extracting them. Use the packer rather than zipping a parent
 directory: archive entries use canonical file names at the archive root, with
 no directory entries, duplicates or links. Restart the host to switch packages
-instead of modifying a running host's archive. For a read-only Docker bind mount,
-set `WORLD_FLIGHT_ZIP` to the file's absolute path and use
-[`deploy/compose.world-flight-zip.yaml`](../../deploy/compose.world-flight-zip.yaml)
-instead of the directory overlay. See the [deployment examples](../../README.md#docker-and-reverse-proxy-hosting).
-The older `STUNT_WORLD_FLIGHT=/absolute/path/package/manifest.json` setting
-continues to work, including packages without a road layer.
+instead of modifying a running host's archive. Atlas ZIPs can use the same
+directory but are not required for the U.S. modes. For a Docker bind mount, set
+`WORLD_ATLAS_DIR` to the host directory and use
+[`deploy/compose.world-atlas.yaml`](../../deploy/compose.world-atlas.yaml).
+See the [deployment and migration examples](../../README.md#docker-and-reverse-proxy-hosting).
 
 ## What is modeled
 

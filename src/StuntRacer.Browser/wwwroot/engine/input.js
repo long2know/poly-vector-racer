@@ -188,10 +188,10 @@ export class Input {
     if (!this.touchEnabled) this.clearTouch();
   }
 
-  setMode(mode, throttle = 0, training = false) {
+  setMode(mode, throttle = 0, scanner = false) {
     if (!['racing', 'flight'].includes(mode)) throw new Error(`Unknown input mode: ${mode}`);
     this.mode = mode;
-    this.scanEnabled = mode === 'flight' && training;
+    this.scanEnabled = mode === 'flight' && scanner;
     this.setFlightThrottle(throttle);
     this.clear();
   }

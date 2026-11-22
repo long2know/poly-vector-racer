@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
@@ -11,11 +12,11 @@ const assembly = resolve('src/StuntRacer.Host/bin/Release/net10.0/StuntRacer.Hos
 const bundle = resolve('src/StuntRacer.Browser/bin/Release/net10.0/browser-wasm/AppBundle');
 const python = (...args) => promisify(execFile)('python3', ['-B', ...args]);
 
-async function withHost(mount, check, sourcePackage = '', catalog = '', flightPackage = '', worldFlight = '') {
+async function withHost(mount, check, sourcePackage = '', catalog = '', flightPackage = '', worldAtlas = '', extraEnv = {}) {
   const child = spawn('bash', ['scripts/dotnet.sh', assembly, '--urls', 'http://127.0.0.1:0'], {
     env: { ...process.env, BASE_URL: mount, STUNT_BUNDLE: bundle,
       STUNT_AMIGA_PACKAGE: sourcePackage, STUNT_TRACK_CATALOG: catalog, STUNT_FLIGHT_PACKAGE: flightPackage,
-      STUNT_WORLD_FLIGHT: worldFlight },
+      STUNT_WORLD_ATLAS: worldAtlas, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '', timeout;
@@ -33,7 +34,7 @@ async function withHost(mount, check, sourcePackage = '', catalog = '', flightPa
   try {
     const url = await listening;
     clearTimeout(timeout);
-    await check(url);
+    await check(url, () => log);
   } finally {
     clearTimeout(timeout);
     if (child.exitCode === null && child.signalCode === null) {
@@ -62,12 +63,191 @@ test('root deployment serves the actual WASM resources with correct MIME types a
     assert.equal(wasm.headers.get('content-encoding'), 'br');
     assert.deepEqual([...new Uint8Array(await wasm.arrayBuffer()).slice(0, 4)], [0, 97, 115, 109]);
     assert.equal((await (await fetch(`${url}/healthz`)).json()).baseUrl, '');
-    assert.equal((await (await fetch(`${url}/runtime-config.json`)).json()).sourcePackageAvailable, false);
+    const config = await (await fetch(`${url}/runtime-config.json`)).json();
+    assert.equal(config.sourcePackageAvailable, false);
+    assert.equal(config.worldAtlasUrl, null);
+    assert.equal(config.worldFlightUrl, null);
     assert.equal((await fetch(`${url}/source-package.json`)).status, 404);
     assert.equal((await fetch(`${url}/flight-package.json`)).status, 404);
     assert.equal((await fetch(`${url}/world-flight/manifest.json`)).status, 404);
+    assert.equal((await fetch(`${url}/world-atlas/manifest.json`)).status, 404);
     assert.equal((await fetch(`${url}/.env`)).status, 404);
   });
+});
+
+test('Atlas isolates invalid optional ZIPs and serves declared clipped data from a mounted byte revision', async () => {
+  const folder = resolve('artifacts/hosting', `atlas-${randomUUID()}`);
+  await mkdir(folder, { recursive: true });
+  const road = ['road', 'primary', 'Clipped road', 'osm', [[0, 14], [8192, 32]]];
+  const building = ['building', 'commercial', 'Tower', 'osm', [[20, 20], [50, 20], [50, 45], [20, 45]]];
+  const detailRows = [road, building, ...[1, 228, 1000].map(height => [...building, height])];
+  const invalidBuildingRows = [
+    ['bad-height-zero', 5, [...building, 0]],
+    ['bad-height-too-tall', 5, [...building, 1001]],
+    ['bad-height-fraction', 5, [...building, 228.5]],
+    ['bad-height-type', 5, [...building, '228']],
+    ['bad-height-null', 5, [...building, null]],
+    ['bad-height-extra', 5, [...building, 228, 43]],
+    ['bad-height-road', 5, [...road, 228]],
+    ['bad-height-level', 0, [...building, 228]],
+    ['bad-height-source', 5, ['building', 'commercial', 'Tower', 'natural-earth', building[4], 228]],
+    ['bad-height-style', 5, ['building', 'tower', 'Tower', 'osm', building[4], 228]],
+    ['bad-legacy-style', 5, ['road', 'tram', road[2], road[3], road[4]]],
+  ];
+  const fixture = `
+import hashlib,json,pathlib,struct,sys,zipfile
+root = pathlib.Path(sys.argv[1])
+base = bytearray(struct.pack('<4sIII', b'WFA1', 2432, 1217, 16384) + struct.pack('<h', 7) * (2432 * 1217) + bytes(2432 * 1217))
+struct.pack_into('<h', base, 16, -225)
+parts = {'natural-earth': ['Natural Earth', 'Public domain', 'https://www.naturalearthdata.com/'], 'osm': ['© OpenStreetMap contributors', 'ODbL', 'https://www.openstreetmap.org/copyright']}
+def pack(id, extents, tiles, features, source='natural-earth', *, comment=b'', other_base=False, added=False, corrupt=False, conflict=False, feature_rows=None):
+    source_credits = {source: parts[source]}
+    if id == 'area':
+        source_credits['copernicus-dem'] = ['Full licensed source credit. ' * 7, 'Copernicus DEM GLO-30 Public License', 'https://example.org/license']
+    data = dict(kind='world-atlas-pack', schemaVersion=1, grid='eqc-wft1-v1', id=id, name=id,
+        baseSha256='0' * 64 if other_base else hashlib.sha256(base).hexdigest(), terrain=extents,
+        features=features, presets=[dict(id='date-line', name='Date line', lon=179.999, lat=0)] if id=='base' else [],
+        credits=source_credits)
+    with zipfile.ZipFile(root / (id + '.zip'), 'w', compression=zipfile.ZIP_DEFLATED) as out:
+        out.comment = comment
+        out.writestr('manifest.json', json.dumps(data))
+        out.writestr('receipt.json', '{}')
+        out.writestr('DATA-NOTICE.txt', 'Fixture test data.')
+        if id == 'base':
+            out.writestr('base.bin', base)
+        for l,x,z in tiles:
+            raw = bytearray(struct.pack('<4siii',b'WFT1', l,x,z) + struct.pack('<h', 7) * (33 * 33) + bytes(33 * 33))
+            interior = 341 if l == 1 else 782
+            if conflict and (l,x,z) == (1,-2,0):
+                interior += 1
+            struct.pack_into('<h', raw, 16 + 2 * (16 * 33 + 16), interior)
+            if corrupt and (x,z) == (-2,0):
+                struct.pack_into('<h', raw, 16, 8)
+            out.writestr(f'terrain/{l}/{x}/{z}.bin', raw)
+        for l,x,z in features:
+            end = (262144 >> l) + (1 if id == 'bad-clip' else 0)
+            row = ['road','primary','Clipped road',source,[[0,14],[end,32]]]
+            rows = [row] if feature_rows is None else feature_rows
+            out.writestr(f'features/{l}/{x}/{z}.json', json.dumps(dict(schemaVersion=1, tile=[l,x,z], rows=rows)))
+        if added:
+            out.writestr('unlisted.bin', b'not declared')
+
+mode = sys.argv[2]
+quartet = [(1,x,z) for z in [0,1] for x in [-2,-1]]
+area = [[1,-2,0,0,2]]
+def refinement(id, w):
+    pack(id, area + [[2,w,0,w+2,2]], quartet + [(2,x,z) for x in [w,w+1] for z in [0,1]], [])
+if mode in ('start','base-error'):
+    if mode == 'base-error':
+        struct.pack_into('<I', base, 12, 1024)
+    pack('base', [], [], [[0,-1,0]])
+if mode == 'start':
+    pack('bad-hash', [], [], [], other_base=True)
+    pack('bad-entries', [], [], [], added=True)
+    pack('bad-clip', [], [], [[5,-1,0]], 'osm')
+    pack('missing-support', [[2,0,0,2,2]], [(2,x,z) for x in [0,1] for z in [0,1]], [])
+    pack('missing-sibling', [[1,0,0,2,1]], [(1,0,0),(1,1,0)], [])
+    pack('wrong-seam', area, quartet, [], corrupt=True)
+    pack('z-overlap', area, quartet, [], conflict=True)
+    pack('bad-duplicate-key', area + area, quartet, [])
+    refinement('a-refine', -4)
+    refinement('z-refine', -2)
+    good, invalid = json.loads(sys.argv[3])
+    pack('layer', [], [], [[5,-1,0]], 'osm', feature_rows=good)
+    for ident,level,row in invalid:
+        pack(ident, [], [], [[level,-1,0]], row[3], feature_rows=[row])
+    pack('osm-overview', [], [], [[0,-1,0]], 'osm')
+if mode in ('start','accepted-change'):
+    pack('area', area, quartet, [], comment=b'changed archive bytes' if mode=='accepted-change' else b'')
+if mode == 'rejected-change':
+    pack('bad-clip', [], [], [[5,-1,0]], 'osm', comment=b'rejected archive changed')
+`;
+  const sha = bytes => createHash('sha256').update(bytes).digest();
+  const run = async (mode, check) => {
+    await python('-c', fixture, folder, mode, JSON.stringify([detailRows, invalidBuildingRows]));
+    await withHost('/atlas-game', check, '', '', '', folder);
+  };
+  const catalogUrl = '/atlas-game/world-atlas';
+  let revision;
+  try {
+    await run('start', async (url, log) => {
+      const config = await (await fetch(`${url}/atlas-game/runtime-config.json`)).json();
+      assert.equal(config.worldAtlasUrl, './world-atlas/manifest.json');
+      assert.equal(config.worldFlightUrl, null);
+      const response = await fetch(`${url}${catalogUrl}/manifest.json`);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      const doc = await response.json();
+      assert.deepEqual([doc.kind, doc.schemaVersion, doc.grid], ['world-atlas', 1, 'eqc-wft1-v1']);
+      const packIds = ['base', 'a-refine', 'area', 'layer', 'osm-overview', 'z-refine'];
+      assert.deepEqual(doc.packs.map(pack => pack.id), packIds);
+      assert.equal(doc.packs[0].presets[0].lon, 179.999);
+      assert.deepEqual(doc.packs[3].credits.osm, ['© OpenStreetMap contributors', 'ODbL', 'https://www.openstreetmap.org/copyright']);
+      revision = doc.revision;
+      const accepted = await Promise.all(packIds.map(id => readFile(resolve(folder, `${id}.zip`))));
+      assert.equal(revision, sha(Buffer.concat(accepted.map(sha))).toString('hex'));
+      for (const name of ['bad-hash', 'bad-entries', 'bad-clip', 'missing-support', 'missing-sibling', 'wrong-seam', 'bad-duplicate-key'])
+        assert.match(log(), new RegExp(`optional pack '${name}' excluded`));
+      assert.match(log(), /optional pack 'z-overlap' excluded: Terrain key '1\/-2\/0' conflicts with accepted pack 'a-refine'/);
+
+      const assets = `${url}${catalogUrl}/${revision}`;
+      const fallback = await fetch(`${assets}/base.bin`);
+      assert.equal(fallback.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+      const bytes = Buffer.from(await fallback.arrayBuffer());
+      assert.equal(bytes.length, 8879248);
+      assert.equal(bytes.toString('ascii', 0, 4), 'WFA1');
+      assert.equal(bytes.readInt16LE(16), -225);
+      assert.equal(sha(bytes).toString('hex'), doc.packs[0].baseSha256);
+      const detail = await fetch(`${assets}/tiles/1/-2/0.bin`);
+      const tile = Buffer.from(await detail.arrayBuffer());
+      assert.match(detail.headers.get('cache-control'), /immutable/);
+      assert.deepEqual([tile.readInt32LE(4), tile.readInt32LE(8), tile.readInt32LE(12), tile.readInt16LE(16 + 2 * (16 * 33 + 16))],
+        [1, -2, 0, 341]);
+      for (const x of [-4, -2]) {
+        const fine = await fetch(`${assets}/tiles/2/${x}/0.bin`);
+        assert.equal(fine.status, 200, `refinements ordered on both sides of the common parent pack are available at x=${x}`);
+        const bytes = Buffer.from(await fine.arrayBuffer());
+        assert.equal(bytes.readInt16LE(16 + 2 * (16 * 33 + 16)), 782);
+      }
+      const feature = await fetch(`${assets}/features/layer/5/-1/0.json`);
+      assert.match(feature.headers.get('cache-control'), /immutable/);
+      assert.deepEqual(await feature.json(), { schemaVersion: 1, tile: [5, -1, 0], rows: detailRows },
+        'legacy rows and real building heights are served without changing the v1 shape or data');
+      for (const [id, level] of invalidBuildingRows) {
+        assert.match(log(), new RegExp(`optional pack '${id}' excluded`));
+        assert.equal((await fetch(`${assets}/features/${id}/${level}/-1/0.json`)).status, 404, id);
+      }
+      const overview = await (await fetch(`${assets}/features/osm-overview/0/-1/0.json`)).json();
+      const naturalEarth = await (await fetch(`${assets}/features/base/0/-1/0.json`)).json();
+      assert.deepEqual(overview.rows[0].slice(3), ['osm', [[0, 14], [262144, 32]]]);
+      assert.equal(naturalEarth.rows[0][3], 'natural-earth', 'independent L0 sources can share a tile key');
+      for (const bad of [`${assets}/tiles/01/-2/0.bin`, `${assets}/tiles/1/-02/0.bin`, `${assets}/tiles/1/-2/-0.bin`,
+        `${assets}/tiles/1/152/0.bin`, `${assets}/tiles/1/0/0.bin`, `${assets}/tiles/2/0/0.bin`,
+        `${assets}/features/bad-clip/5/-1/0.json`, `${assets}/features/layer/0/-1/0.json`,
+        `${assets}/receipt.json`, `${assets}/DATA-NOTICE.txt`, `${url}${catalogUrl}/base.zip`,
+        `${url}${catalogUrl}/stale/base.bin`, `${url}/world-atlas/manifest.json`])
+        assert.equal((await fetch(bad)).status, 404, bad);
+    });
+    await run('rejected-change', async url => {
+      const doc = await (await fetch(`${url}${catalogUrl}/manifest.json`)).json();
+      assert.equal(doc.revision, revision, 'excluded ZIPs cannot invalidate accepted immutable assets');
+    });
+    await run('accepted-change', async url => {
+      const doc = await (await fetch(`${url}${catalogUrl}/manifest.json`)).json();
+      assert.notEqual(doc.revision, revision, 'a different ZIP byte stream changes revision even if its entry content is the same');
+      assert.equal((await fetch(`${url}${catalogUrl}/${revision}/base.bin`)).status, 404);
+      assert.equal((await fetch(`${url}${catalogUrl}/${doc.revision}/tiles/1/-2/0.bin`)).status, 200);
+    });
+    await run('base-error', async (url, log) => {
+      const config = await (await fetch(`${url}/atlas-game/runtime-config.json`)).json();
+      assert.equal(config.worldAtlasUrl, null);
+      assert.equal((await fetch(`${url}${catalogUrl}/manifest.json`)).status, 404);
+      assert.match(log(), /World Flight Atlas disabled: Invalid WFA1/);
+      assert.match(await (await fetch(`${url}/atlas-game/`)).text(), /src="\.\/main\.js"/);
+      assert.equal((await (await fetch(`${url}/healthz`)).json()).status, 'ready');
+    });
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
 });
 
 function worldFlightFixture() {
@@ -97,7 +277,8 @@ function worldFlightFixture() {
 test('geographic terrain serves only declared detail patches and scenery databases at the mounted revision', async () => {
   const root = resolve('artifacts/hosting');
   await mkdir(root, { recursive: true });
-  const folder = await mkdtemp(resolve(root, 'world-flight-'));
+  const scenery = await mkdtemp(resolve(root, 'world-flight-'));
+  const folder = resolve(scenery, 'seattle');
   const manifest = resolve(folder, 'manifest.json'), roadPath = resolve(folder, 'seattle-roads.json');
   const { version, conus, catalogData, roadArea, roadPayload, footprints } = worldFlightFixture();
   const roadBody = JSON.stringify(roadPayload);
@@ -106,6 +287,7 @@ test('geographic terrain serves only declared detail patches and scenery databas
   tile.write('WFT1');
   tile.writeInt16LE(745, 16);
   try {
+    await mkdir(folder);
     await writeFile(manifest, body);
     await writeFile(roadPath, roadBody);
     for (const city of [...conus.cities.map(city => city.id), 'other'])
@@ -120,9 +302,11 @@ test('geographic terrain serves only declared detail patches and scenery databas
       await mkdir(tiles, { recursive: true });
       await writeFile(resolve(tiles, '0.bin'), tile);
     }
-    await withHost('/map', async url => {
+    await withHost('/map', async (url, log) => {
       const config = await (await fetch(`${url}/map/runtime-config.json`)).json();
       assert.equal(config.worldFlightUrl, './world-flight/manifest.json');
+      assert.equal(config.worldAtlasUrl, null);
+      assert.doesNotMatch(log(), /missing base\.zip/);
       const catalog = await fetch(new URL(config.worldFlightUrl, `${url}/map/`));
       assert.equal(await catalog.text(), body);
       assert.equal(catalog.headers.get('cache-control'), 'no-store');
@@ -134,9 +318,10 @@ test('geographic terrain serves only declared detail patches and scenery databas
       for (const { id } of conus.cities)
         assert.equal(await (await fetch(`${base}/${id}-buildings.json`)).text(), footprints);
       for (const path of [`${base}/tiles/conus/3/2/0.bin`, `${base}/tiles/unknown/0/0/0.bin`, `${base}/other-buildings.json`,
-        `${url}/map/world-flight/old/tiles/conus/0/0/0.bin`, `${url}/world-flight/manifest.json`, `${base}/seattle-roads.json`])
+        `${url}/map/world-flight/old/tiles/conus/0/0/0.bin`, `${url}/world-flight/manifest.json`, `${base}/seattle-roads.json`,
+        `${url}/map/seattle/manifest.json`])
         assert.equal((await fetch(path)).status, 404);
-    }, '', '', '', manifest);
+    }, '', '', '', scenery);
 
     conus.roads = roadArea;
     await writeFile(manifest, JSON.stringify(catalogData));
@@ -149,28 +334,33 @@ test('geographic terrain serves only declared detail patches and scenery databas
       assert.equal(await layer.text(), roadBody);
       for (const path of [`${base}/old/seattle-roads.json`, `${base}/${version}/san-francisco-roads.json`])
         assert.equal((await fetch(path)).status, 404);
-    }, '', '', '', manifest);
+    }, '', '', '', scenery);
     roadPayload.roads[1][3][1][2] = 900;
     await writeFile(roadPath, JSON.stringify(roadPayload));
     await assert.rejects(withHost('', () => assert.fail('Out-of-range bridge deck must be rejected'),
-      '', '', '', manifest), /Seattle road database or metadata is malformed/);
+      '', '', '', scenery), /Seattle road database or metadata is malformed/);
     await rm(roadPath);
     await assert.rejects(withHost('', () => assert.fail('A declared road database cannot be missing'),
-      '', '', '', manifest), /Seattle road database is missing/);
+      '', '', '', scenery), /Seattle road database is missing/);
     await writeFile(roadPath, roadBody);
 
     conus.patches[3][0] = [0, 0, 4, 2];
     await writeFile(manifest, JSON.stringify(catalogData));
     await assert.rejects(withHost('', () => assert.fail('Overlapping patches must be rejected'),
-      '', '', '', manifest), /detail patches must not overlap/);
-  } finally { await rm(folder, { recursive: true, force: true }); }
+      '', '', '', scenery), /detail patches must not overlap/);
+    await rm(manifest);
+    await assert.rejects(withHost('', () => assert.fail('An extracted Seattle package cannot lack its manifest'),
+      '', '', '', scenery), /missing seattle\/manifest\.json/);
+  } finally { await rm(scenery, { recursive: true, force: true }); }
 });
 
 test('portable World Flight ZIP packs and serves exact compiled assets without exposing the archive', async t => {
   const root = resolve('artifacts/hosting');
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(resolve(root, 'world-flight-zip-'));
-  const folder = resolve(directory, 'package'), archive = resolve(directory, 'world-flight.zip');
+  const scenery = resolve(directory, 'scenery');
+  const folder = resolve(scenery, 'seattle'), archive = resolve(directory, 'world-flight.zip');
+  const seattle = resolve(scenery, 'seattle.zip');
   const { version, regions, conus, catalogData, roadArea, roadPayload, footprints } = worldFlightFixture();
   conus.roads = roadArea;
   const entries = new Map();
@@ -192,7 +382,7 @@ test('portable World Flight ZIP packs and serves exact compiled assets without e
   entries.set('seattle-buildings.json', footprints);
   entries.set('san-francisco-buildings.json', footprints.replace('18', '27'));
   const pack = output => python('tools/WorldFlight/pack.py', '--input', folder, '--output', output);
-  const host = (path, check) => withHost('/map', check, '', '', '', path);
+  const host = (check, path = scenery, extraEnv = {}) => withHost('/map', check, '', '', '', path, extraEnv);
   try {
     await Promise.all([...entries].map(async ([name, data]) => {
       const path = resolve(folder, name);
@@ -237,10 +427,16 @@ with zipfile.ZipFile(folder / "short-tile.zip", "w") as out:
     assert.match(notice, /Open Database License \(ODbL\) v1\.0/);
     assert.equal(packedReceipt, receipt);
 
-    await host(archive, async url => {
+    // A different, usable extracted version proves that the reserved ZIP takes precedence.
+    await writeFile(resolve(folder, 'manifest.json'), JSON.stringify({ ...catalogData, version: 'e'.repeat(20) }));
+    await copyFile(archive, seattle);
+    assert.deepEqual(await readFile(seattle), original, 'migration is a byte-for-byte rename or copy');
+    await host(async (url, log) => {
       const mount = `${url}/map/`;
       const config = await (await fetch(`${mount}runtime-config.json`)).json();
       assert.equal(config.worldFlightUrl, './world-flight/manifest.json');
+      assert.equal(config.worldAtlasUrl, null);
+      assert.doesNotMatch(log(), /missing base\.zip/);
       const manifest = await fetch(new URL(config.worldFlightUrl, mount));
       assert.equal(manifest.status, 200);
       assert.equal(manifest.headers.get('cache-control'), 'no-store');
@@ -260,12 +456,15 @@ with zipfile.ZipFile(folder / "short-tile.zip", "w") as out:
         `${base}tiles/conus%2f..%2falaska/0/0/0.bin`, `${base}tiles/unknown/0/0/0.bin`,
         `${mount}world-flight/old/tiles/conus/0/0/0.bin`, `${mount}world-flight/old/seattle-roads.json`,
         `${url}/world-flight/manifest.json`, `${base}receipt.json`, `${base}DATA-NOTICE.txt`,
-        `${base}world-flight.zip`, `${mount}world-flight.zip`]) {
+        `${base}world-flight.zip`, `${mount}world-flight.zip`, `${mount}seattle.zip`,
+        `${mount}seattle/manifest.json`, `${mount}world-atlas/manifest.json`]) {
         assert.equal((await fetch(path)).status, 404, path);
       }
     });
 
-    await host(resolve(directory, 'partial.zip'), async url => {
+    await writeFile(resolve(folder, 'manifest.json'), entries.get('manifest.json'));
+    await copyFile(resolve(directory, 'partial.zip'), seattle);
+    await host(async url => {
       const base = `${url}/map/world-flight/${version}`;
       assert.equal(await (await fetch(`${base}/seattle-buildings.json`)).text(), footprints);
       for (const path of ['tiles/conus/3/1/1.bin', 'tiles/conus/3/2/0.bin',
@@ -275,15 +474,128 @@ with zipfile.ZipFile(folder / "short-tile.zip", "w") as out:
 
     await t.test('invalid, ambiguous and linked archives fail at startup', async () => {
       await writeFile(resolve(directory, 'not-a-zip.zip'), 'not a ZIP');
-      await symlink(archive, resolve(directory, 'linked.zip'));
       for (const [name, expected] of [
         ['not-a-zip.zip', /Cannot open World Flight ZIP/],
         ['duplicate.zip', /Duplicate package entry 'manifest.json'/],
         ['unsafe.zip', /Unexpected or unsafe package entry name/],
         ['short-tile.zip', /Invalid package entry size for 'tiles\/conus\/3\/4\/0\.bin'/],
-        ['linked.zip', /must not be symbolic links/],
-      ])
-        await assert.rejects(host(resolve(directory, name), () => assert.fail(`Must reject ${name}`)), expected);
+      ]) {
+        await copyFile(resolve(directory, name), seattle);
+        await assert.rejects(host(() => assert.fail(`Must reject ${name} rather than fall back to the extracted copy`)), expected);
+      }
+      await rm(seattle);
+      await symlink(archive, seattle);
+      await assert.rejects(host(() => assert.fail('Must reject a linked Seattle ZIP')), /must not be symbolic links/);
+      await rm(seattle);
+    });
+
+    await t.test('Seattle and Atlas share a private mount without changing either catalog revision', async () => {
+      const combined = resolve(directory, 'combined'), alias = resolve(directory, 'private-alias');
+      const baseFile = resolve(combined, 'base.zip'), seattleFile = resolve(combined, 'seattle.zip');
+      await mkdir(combined);
+      await symlink(combined, alias, 'dir');
+      await python('-c', `
+import hashlib,json,pathlib,struct,sys,zipfile
+root = pathlib.Path(sys.argv[1])
+base = struct.pack('<4sIII', b'WFA1', 2432, 1217, 16384) + struct.pack('<h', 23) * (2432 * 1217) + bytes(2432 * 1217)
+for ident, keys, source in (('base', [], 'natural-earth'), ('harbor-osm', [[5,0,0]], 'osm')):
+    manifest = dict(kind='world-atlas-pack', schemaVersion=1, grid='eqc-wft1-v1', id=ident, name=ident,
+        baseSha256=hashlib.sha256(base).hexdigest(), terrain=[], features=keys, presets=[],
+        credits={source: [source, 'fixture notice', 'https://example.org/license']})
+    with zipfile.ZipFile(root / (ident + '.zip'), 'w', zipfile.ZIP_DEFLATED) as out:
+        out.writestr('manifest.json', json.dumps(manifest))
+        out.writestr('receipt.json', '{}')
+        out.writestr('DATA-NOTICE.txt', 'Fixture data')
+        if ident == 'base':
+            out.writestr('base.bin', base)
+        else:
+            out.writestr('features/5/0/0.json', json.dumps(dict(schemaVersion=1, tile=[5,0,0],
+                rows=[['building','commercial','Harbor Tower','osm',[[0,0],[300,0],[300,300]],96]])))
+`, combined);
+
+      let atlasManifest, atlasRevision;
+      await host(async url => {
+        const config = await (await fetch(`${url}/map/runtime-config.json`)).json();
+        assert.equal(config.worldFlightUrl, null, 'the old setting alone no longer enables U.S. scenery');
+        assert.equal(config.worldAtlasUrl, null);
+      }, '', { STUNT_WORLD_FLIGHT: archive });
+      await copyFile(archive, resolve(combined, 'world-flight.zip'));
+      await copyFile(archive, resolve(combined, 'Seattle.zip'));
+      await host(async url => {
+        const mount = `${url}/map/`;
+        const config = await (await fetch(`${mount}runtime-config.json`)).json();
+        assert.equal(config.worldFlightUrl, null, 'neither the old setting nor a different filename may load Seattle');
+        assert.equal(config.worldAtlasUrl, './world-atlas/manifest.json');
+        assert.equal((await fetch(`${mount}world-flight/manifest.json`)).status, 404);
+        const response = await fetch(new URL(config.worldAtlasUrl, mount));
+        atlasManifest = await response.text();
+        const doc = JSON.parse(atlasManifest);
+        assert.deepEqual(doc.packs.map(pack => pack.id), ['base', 'harbor-osm']);
+        atlasRevision = doc.revision;
+      }, combined, { STUNT_WORLD_FLIGHT: archive });
+      await rm(resolve(combined, 'world-flight.zip'));
+      await rm(resolve(combined, 'Seattle.zip'));
+
+      await copyFile(archive, seattleFile);
+      // This is exactly the Atlas ZIP candidate limit (including base.zip), before Seattle is counted.
+      await python('-c', `
+import pathlib,sys
+root = pathlib.Path(sys.argv[1])
+for i in range(510):
+    (root / f"Invalid-{i}.zip").touch()
+`, combined);
+      await host(async (url, log) => {
+        const mount = `${url}/map/`;
+        const config = await (await fetch(`${mount}runtime-config.json`)).json();
+        assert.equal(config.worldAtlasUrl, './world-atlas/manifest.json');
+        assert.equal(config.worldFlightUrl, './world-flight/manifest.json');
+        assert.ok(!JSON.stringify(config).includes(directory));
+        assert.equal(await (await fetch(new URL(config.worldAtlasUrl, mount))).text(), atlasManifest,
+          'Seattle is not counted, parsed, or hashed by Atlas');
+        assert.doesNotMatch(log(), /optional pack 'seattle'|too many ZIP candidates/);
+        assert.equal(await (await fetch(new URL(config.worldFlightUrl, mount))).text(), entries.get('manifest.json'));
+        const legacy = `${mount}world-flight/${version}/`;
+        assert.equal(await (await fetch(`${legacy}seattle-roads.json`)).text(), entries.get('seattle-roads.json'));
+        assert.deepEqual(Buffer.from(await (await fetch(`${legacy}tiles/conus/3/4/0.bin`)).arrayBuffer()),
+          entries.get('tiles/conus/3/4/0.bin'));
+        const atlas = `${mount}world-atlas/${atlasRevision}/`;
+        assert.deepEqual((await (await fetch(`${atlas}features/harbor-osm/5/0/0.json`)).json()).rows[0],
+          ['building', 'commercial', 'Harbor Tower', 'osm', [[0, 0], [300, 0], [300, 300]], 96]);
+        for (const path of [`${mount}seattle.zip`, `${mount}world-flight.zip`, `${mount}base.zip`,
+          `${mount}harbor-osm.zip`, `${legacy}seattle.zip`, `${atlas}seattle.zip`])
+          assert.equal((await fetch(path)).status, 404, path);
+      }, alias);
+
+      await writeFile(baseFile, 'malformed Atlas base');
+      await host(async (url, log) => {
+        const config = await (await fetch(`${url}/map/runtime-config.json`)).json();
+        assert.equal(config.worldAtlasUrl, null);
+        assert.equal(config.worldFlightUrl, './world-flight/manifest.json');
+        assert.match(log(), /World Flight Atlas disabled/);
+        assert.equal(await (await fetch(`${url}/map/world-flight/${version}/seattle-roads.json`)).text(),
+          entries.get('seattle-roads.json'));
+      }, combined);
+    });
+
+    await t.test('missing scenery is diagnosed and a symlink into the public bundle is rejected', async () => {
+      const empty = resolve(directory, 'empty'), publicBundle = resolve(directory, 'public');
+      const publicScenery = resolve(publicBundle, 'scenery'), alias = resolve(directory, 'public-alias');
+      await mkdir(empty);
+      await host(async (url, log) => {
+        const config = await (await fetch(`${url}/map/runtime-config.json`)).json();
+        assert.equal(config.worldAtlasUrl, null);
+        assert.equal(config.worldFlightUrl, null);
+        assert.match(log(), /missing base\.zip/);
+      }, empty);
+      await host(async (_url, log) => {
+        assert.match(log(), /configured scenery directory does not exist/);
+      }, resolve(directory, 'does-not-exist'));
+      await mkdir(publicScenery, { recursive: true });
+      await writeFile(resolve(publicBundle, 'index.html'), '<title>Test bundle</title>');
+      await copyFile(archive, resolve(publicScenery, 'seattle.zip'));
+      await symlink(publicScenery, alias, 'dir');
+      await assert.rejects(host(() => assert.fail('Must not serve a private archive under the public bundle'),
+        alias, { STUNT_BUNDLE: publicBundle }), /outside the public WASM bundle/);
     });
 
     await t.test('pack fails cleanly for a missing, linked or mislabeled tile', async () => {

@@ -27,6 +27,9 @@ SeattleDrivingSession Make() => new(roads, (x, z) => terrainAvailable ? elevatio
 var game = Make();
 Check(game.Destinations.Count >= 3, "The real ZIP supports at least three stops.");
 Check(game.MapStreets.Count() > 3500, "Connected streets must come from the real map.");
+Check(game.Activity.CruiseSpeed == "normal", "New drives must keep the established normal Autopilot cruise.");
+Expect<ArgumentException>(() => game.Command("autopilot-speed:invalid"));
+SeattleGroundChecks.CheckSpawn(package, game, elevation);
 using var streetData = JsonDocument.Parse(roads);
 var edges = new HashSet<(DrivePoint, DrivePoint)>();
 foreach (var row in streetData.RootElement.GetProperty("roads").EnumerateArray())
@@ -64,6 +67,7 @@ terrainAvailable = true;
 game.Command("restart");
 
 var wheel = Arrive(game, "great-wheel", checkPause: true);
+var normalWheelTicks = game.Snapshot.Tick;
 var spheres = Arrive(game, "amazon-spheres");
 var needle = Arrive(game, "space-needle");
 game.Command("restart");
@@ -74,6 +78,46 @@ var alternate = Make();
 alternate.Command("start");
 var wheelAlternate = Arrive(alternate, "great-wheel", frameDeltas: [.024, .17, .013, .12, .195]);
 Check(Distance(wheel, wheelAlternate) < 1e-8, "Fixed-step arrival position must not depend on frame cadence.");
+
+var fast = Make();
+fast.Command("autopilot-speed:fast");
+Check(fast.Snapshot.Phase == "ready" && fast.Activity.CruiseSpeed == "fast", "Cruise can be selected in the garage.");
+fast.Command("start");
+Arrive(fast, "great-wheel");
+Check(fast.Snapshot.Tick < normalWheelTicks - 240, "Fast Autopilot must reach the Wheel at least two seconds sooner.");
+foreach (var id in new[] { "amazon-spheres", "space-needle", "lumen-field", "t-mobile-park" })
+{
+    fast.Command("restart");
+    Arrive(fast, id);
+}
+
+var slow = Make();
+slow.Command("autopilot-speed:slow");
+slow.Command("start");
+Arrive(slow, "great-wheel");
+Check(slow.Snapshot.Tick > normalWheelTicks + 240, "Slow Autopilot must cruise below normal speed and still reach the stop.");
+
+var speedChange = Make();
+speedChange.Command("start");
+speedChange.Command("destination:great-wheel");
+speedChange.Command("autopilot-on");
+for (var i = 0; i < 12; i++) speedChange.Advance(.25, default);
+var beforeCruise = speedChange.Snapshot;
+var beforeCruiseActivity = speedChange.Activity;
+speedChange.Command("autopilot-speed:slow");
+Check(speedChange.Activity == (beforeCruiseActivity with { CruiseSpeed = "slow" }) &&
+    Position(speedChange.Snapshot) == Position(beforeCruise) && speedChange.Snapshot.Tick == beforeCruise.Tick &&
+    speedChange.Snapshot.Player.Speed == beforeCruise.Player.Speed, "Changing cruise while moving must not interrupt Autopilot or snap the car.");
+speedChange.Command("pause");
+speedChange.Command("autopilot-speed:fast");
+speedChange.Advance(.2, new(1, 1, 0, false));
+Check(speedChange.Activity is { Autopilot: true, CruiseSpeed: "fast" } && speedChange.Snapshot.Phase == "paused" &&
+    speedChange.Snapshot.Tick == beforeCruise.Tick && Position(speedChange.Snapshot) == Position(beforeCruise),
+    "Changing cruise while paused must not move the car or relinquish Autopilot.");
+speedChange.Command("resume");
+speedChange.Advance(.25, default);
+Check(speedChange.Activity.Autopilot && speedChange.Snapshot.Tick > beforeCruise.Tick &&
+    Distance(Position(speedChange.Snapshot), Position(beforeCruise)) > 1, "Autopilot must continue after changing cruise and resuming.");
 
 game.Command("restart");
 game.Command("destination:great-wheel");
@@ -92,6 +136,8 @@ Check(game.Snapshot.Phase == "ready" && game.Snapshot.Tick == 0 && Position(game
     "Garage returns to the street start and clears autopilot.");
 Console.WriteLine($"Manual takeover at tick {before.Tick}; advanced {Distance(Position(before), Position(manual)):F1} m and yaw changed " +
     $"{Math.IEEERemainder(manual.Player.Yaw - before.Player.Yaw, Math.Tau):F2} rad.");
+ManualSteeringChecks.Run(Make());
+SeattleGroundChecks.Run(roads, elevation);
 return 0;
 
 DrivePoint Arrive(SeattleDrivingSession session, string id, bool checkPause = false, double[]? frameDeltas = null)
@@ -141,7 +187,8 @@ DrivePoint Arrive(SeattleDrivingSession session, string id, bool checkPause = fa
     var finish = session.Snapshot;
     var driven = session.Activity.DrivenDistance - before;
     var end = Position(finish);
-    Console.WriteLine($"{id}: {session.Activity.Status} in {finish.Time - start:F2}s, plan {plan.Length:F1} m, drove {driven:F1} m, " +
+    Console.WriteLine($"{id} ({session.Activity.CruiseSpeed}): {session.Activity.Status} in {finish.Time - start:F2}s, " +
+        $"plan {plan.Length:F1} m, drove {driven:F1} m, " +
         $"speed {finish.Player.Speed:F2}/{maxSpeed:F1} m/s, turn {minTurnSpeed:F1} m/s, height {minY:F1}–{maxY:F1} m; " +
         $"pos {end}, remaining {session.Activity.Remaining:F1} m.");
     Check(session.Activity.Status == "arrived", $"{id}: {session.Activity.Message}");

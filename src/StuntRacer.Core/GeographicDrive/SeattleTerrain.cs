@@ -22,11 +22,11 @@ internal sealed class SeattleTerrain(Func<double, double, (double Height, bool I
 
     public RoadSample Sample(double x, double z, double carY)
     {
-        var center = At(x, z);
-        var x0 = At(x - 0.25, z);
-        var x1 = At(x + 0.25, z);
-        var z0 = At(x, z - 0.25);
-        var z1 = At(x, z + 0.25);
+        var center = ContactAt(x, z);
+        var x0 = ContactAt(x - 0.25, z);
+        var x1 = ContactAt(x + 0.25, z);
+        var z0 = ContactAt(x, z - 0.25);
+        var z1 = ContactAt(x, z + 0.25);
         if (center is null || x0 is null || x1 is null || z0 is null || z1 is null)
         {
             Missing = true;
@@ -34,5 +34,14 @@ internal sealed class SeattleTerrain(Func<double, double, (double Height, bool I
         }
         return new RoadSample(0, x, center.Value.Height, z, 0, 0, 0, 0, !center.Value.IsWater,
             (x1.Value.Height - x0.Value.Height) * 2, (z1.Value.Height - z0.Value.Height) * 2);
+    }
+
+    private (double Height, bool IsWater)? ContactAt(double x, double z)
+    {
+        if (At(x, z) is { } sample) return sample;
+        var bounds = SeattleDriveArea.Bounds;
+        // Wheels can overhang the hard drive boundary without requiring another terrain tile.
+        return bounds.Contains(new(x, z)) ? null
+            : At(Math.Clamp(x, bounds.MinX, bounds.MaxX), Math.Clamp(z, bounds.MinZ, bounds.MaxZ));
     }
 }

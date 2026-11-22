@@ -20,8 +20,9 @@ var trackCatalog = ExternalTrackCatalog.Load(
 var flightPackagePath = Environment.GetEnvironmentVariable("STUNT_FLIGHT_PACKAGE");
 var flightPackage = string.IsNullOrWhiteSpace(flightPackagePath) ? null :
     ExternalSourceData.ReadJson(flightPackagePath, bundle, "fa18-amiga-runtime");
-var worldFlightPath = Environment.GetEnvironmentVariable("STUNT_WORLD_FLIGHT");
-using var worldFlight = string.IsNullOrWhiteSpace(worldFlightPath) ? null : WorldFlightCatalog.Load(worldFlightPath, bundle);
+var scenery = WorldSceneryDirectory.Resolve(Environment.GetEnvironmentVariable("STUNT_WORLD_ATLAS"), bundle);
+using var worldFlight = scenery?.LoadSeattle();
+using var worldAtlas = WorldAtlasCatalog.LoadConfigured(scenery, worldFlight is not null);
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -102,6 +103,7 @@ app.MapGet("/runtime-config.json", (HttpContext context) =>
         flightPackageAvailable = flightPackage is not null,
         flightPackageUrl = flightPackage is null ? null : "./flight-package.json",
         worldFlightUrl = worldFlight is null ? null : "./world-flight/manifest.json",
+        worldAtlasUrl = worldAtlas is null ? null : "./world-atlas/manifest.json",
         tracks = trackCatalog.Entries.Select(track => new
         {
             track.Id, track.Name, track.Group, track.Status, track.Reason,
@@ -147,4 +149,24 @@ app.MapGet("/world-flight/{revision}/seattle-roads.json", (HttpContext context, 
     context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
     return Results.Bytes(roads, "application/json");
 });
+app.MapGet("/world-atlas/manifest.json", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return worldAtlas is null ? Results.NotFound() : Results.Bytes(worldAtlas.Manifest, "application/json");
+});
+app.MapGet("/world-atlas/{revision}/base.bin", (HttpContext context, string revision) =>
+    AtlasAsset(context, worldAtlas?.Base(revision), "application/octet-stream"));
+app.MapGet("/world-atlas/{revision}/tiles/{level}/{x}/{z}.bin",
+    (HttpContext context, string revision, string level, string x, string z) =>
+        AtlasAsset(context, worldAtlas?.Tile(revision, level, x, z), "application/octet-stream"));
+app.MapGet("/world-atlas/{revision}/features/{pack}/{level}/{x}/{z}.json",
+    (HttpContext context, string revision, string pack, string level, string x, string z) =>
+        AtlasAsset(context, worldAtlas?.Features(revision, pack, level, x, z), "application/json"));
 app.Run();
+
+static IResult AtlasAsset(HttpContext context, byte[]? data, string contentType)
+{
+    if (data is null) return Results.NotFound();
+    context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+    return Results.Bytes(data, contentType);
+}

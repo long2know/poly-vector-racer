@@ -3,12 +3,16 @@ import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { verifyArcadeActivities } from './arcade-activities.mjs';
 import { verifySeattleDrive } from './seattle-drive.mjs';
+import { verifyStuntCourses } from './stunt-courses.mjs';
 
 const base = new URL(process.env.STUNT_URL ?? 'http://127.0.0.1:5188/stunt-car-racer/');
 const focus = process.env.STUNT_BROWSER_FOCUS;
 const seattleFocus = /^seattle-drive(?:-legacy|-no-package)?$/.test(focus ?? '');
 const geographicSpeedFocus = focus === 'world-flight-speed';
+const arcadeFocus = focus === 'arcade-activities';
+const stuntCoursesFocus = focus === 'stunt-courses';
 const artifactRoot = resolve('artifacts/browser');
 await mkdir(artifactRoot, { recursive: true });
 const output = await mkdtemp(resolve(artifactRoot, 'run-'));
@@ -184,7 +188,8 @@ async function stopDriver() {
 async function driveUntil(expression, timeout = 90000, heldKeys = []) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (await evaluate(expression)) return;
+    const result = await evaluate(expression);
+    if (result) return result;
     const state = await observe();
     if (state.phase === 'finished') throw new Error(`The run finished without reaching ${expression}`);
     if (state.phase === 'paused') {
@@ -1069,7 +1074,9 @@ async function verifyStuntsLoop(mode = 'stunts') {
   await driveUntil('stuntRacer.observe().phase === "racing"', 20000);
   await key('KeyW', true);
   await key('Space', true);
-  await driveUntil('stuntRacer.observe().time>5.5', 15000, [['KeyW'], ['Space']]);
+  const { course, length } = await evaluate('stuntRacer.track()');
+  const loopDistance = `(${course.loopStart} - stuntRacer.observe().progress * ${length})`;
+  await driveUntil(`${loopDistance} > 18 && ${loopDistance} < 32`, 15000, [['KeyW'], ['Space']]);
   await screenshot(hard ? '36b-hard-drivin-loop-approach.png' : '38b-stunts-loop-approach.png');
   await driveUntil('Math.abs(stuntRacer.observe().player.pitch)>1.2 && stuntRacer.observe().player.y>15', 25000,
     [['KeyW'], ['Space']]);
@@ -1130,7 +1137,7 @@ async function verifyDrivingExperiences() {
   const shortcuts = await evaluate(`Array.from(document.querySelectorAll(".experience-picker [data-experience]"), b => {
     const r=b.getBoundingClientRect();return {text:b.textContent,width:r.width,height:r.height,top:r.top,bottom:r.bottom};
   })`);
-  assert.equal(shortcuts.length, 4);
+  assert.equal(shortcuts.length, 7);
   assert.ok(shortcuts.every(b => b.width > 44 && b.height >= 44 && b.top >= 0));
   assert.ok(shortcuts.some(b => b.text.includes("HARD DRIVIN")));
   assert.ok(shortcuts.some(b => b.text.includes("STUNTS")));
@@ -1299,7 +1306,7 @@ try {
   assert.equal(evidence.initial.runtime, '.NET 10 browser-WASM');
   assert.equal(evidence.initial.vehicleStyle, 'ev6');
   assert.ok(evidence.initial.completedFrames > 0);
-  if (!seattleFocus && !geographicSpeedFocus && !['flight', 'original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['flight', 'original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
     'world-flight-settings', 'flight-training'].includes(focus)) {
   await tap('F3');
   await waitFor('!document.querySelector("#stats").hidden && /FPS.*GPU-completed/.test(document.querySelector("#stats").textContent)');
@@ -1728,17 +1735,24 @@ try {
     await waitFor('stuntRacer.diagnostics().ready && stuntRacer.diagnostics().compatibility.trackData === "authored"');
   }
   }
-  if (!seattleFocus && !geographicSpeedFocus && !['flight', 'original-flight', 'geographic-flight', 'world-flight-settings', 'flight-training'].includes(focus)) await verifyDrivingExperiences();
-  if (!seattleFocus && !geographicSpeedFocus && !['original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['flight', 'original-flight', 'geographic-flight', 'world-flight-settings', 'flight-training'].includes(focus)) await verifyDrivingExperiences();
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['original-flight', 'experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight',
     'world-flight-settings', 'flight-training'].includes(focus)) await verifyFlight();
-  if (!seattleFocus && !geographicSpeedFocus && !['experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight', 'world-flight-settings',
+  if (!seattleFocus && !geographicSpeedFocus && !arcadeFocus && !stuntCoursesFocus && !['experiences', 'stunts', 'hard-driving', 'world-tour', 'geographic-flight', 'world-flight-settings',
     'flight-training'].includes(focus)) await verifyOriginalFlight();
   if (!focus || focus === 'geographic-flight') await verifyGeographicFlight();
   if (!focus || focus === 'flight-training') await verifyFlightTraining();
+  if (!focus || arcadeFocus) evidence.arcade = await verifyArcadeActivities({
+    evaluate, waitFor, click, touchTap, tap, key, select, observe, setPhone: setFlightPhone, verifyTouchTargets,
+    virtualPad, driveUntil, flightInput, screenshot,
+  });
+  if (!focus || stuntCoursesFocus) evidence.stuntCourses = await verifyStuntCourses({
+    evaluate, observe, waitFor, driveUntil, select, click, key, tap, screenshot,
+  });
   if (!focus || focus === 'world-flight-settings') await verifyWorldFlightSettings();
   if (geographicSpeedFocus) await verifyWorldFlightSpeed();
   if (!focus || seattleFocus) evidence.seattleDrive = await verifySeattleDrive({
-    focus, evaluate, waitFor, click, select, key, observe, driveUntil, screenshot,
+    focus, evaluate, waitFor, click, select, key, observe, driveUntil, screenshot, virtualPad, setPhone: setFlightPhone,
   });
   evidence.final = await evaluate('stuntRacer.diagnostics()');
   assert.deepEqual(failedRequests, [], 'all WASM and local assets must load at the actual base path');

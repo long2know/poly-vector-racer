@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace StuntRacer.Core.Stunts;
 
 /// <summary>
@@ -10,4 +12,5 @@ public sealed record StuntChallengeSnapshot(
     double AirTime, double CurrentAirTime, string Feature, string LastStunt,
     int GatesPassed, int GateCount, string NextGate, double NextGateProgress,
     bool? Success, bool CleanRun, double BestTime, int BestScore, bool RecordedBest,
-    double NormalLoad);
+    double NormalLoad,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? DrivingCue = null);

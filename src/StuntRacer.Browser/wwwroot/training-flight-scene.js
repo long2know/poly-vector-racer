@@ -27,6 +27,51 @@ function groundBeacon(color) {
   return mesh;
 }
 
+function kiteGlider(color) {
+  const mesh = new Builder();
+  const nose = [0, 1, 10], tail = [0, -1, -11];
+  const left = [-12, 0, -3], right = [12, 0, -3];
+  const spine = [0, 3.2, 0], keel = [0, -2.8, 0];
+  for (const [a, b] of [[nose, left], [left, tail], [tail, right], [right, nose]]) {
+    mesh.triangle(b, a, spine, color, 4);
+    mesh.triangle(a, b, keel, slate);
+    mesh.beam(a, b, .54, ivory, 4);
+  }
+  mesh.beam([0, 3, 5], [0, 3, -5], 1, slate);
+  return mesh;
+}
+
+export class DuelFlightScene extends FlightScene {
+  constructor(graphics, world) {
+    super(graphics, world);
+    this.gliders = [graphics.mesh(kiteGlider(gold)), graphics.mesh(kiteGlider(green))];
+  }
+
+  update(state, dt, mode) {
+    const frame = super.update(state, dt, mode);
+    const { rival, inRange, nextPass, cooldownSeconds, success } = state.flight.duel;
+    const { position, heading } = rival;
+    const lit = success == null && inRange && nextPass && cooldownSeconds === 0;
+    frame.draws.push({
+      mesh: this.gliders[Number(lit)],
+      model: pose([position.x, position.y, position.z], heading),
+      shadow: false
+    });
+    return frame;
+  }
+
+  mapPoint(x, z) {
+    const island = this.world.islands[0];
+    const scale = 136 / island.length;
+    return [80 + (x - island.centerX) * scale, 80 + (z - island.centerZ) * scale];
+  }
+
+  dispose() {
+    for (const mesh of this.gliders) this.graphics.releaseMesh(mesh);
+    super.dispose?.();
+  }
+}
+
 export class TrainingFlightScene extends FlightScene {
   constructor(graphics, world) {
     super(graphics, world);

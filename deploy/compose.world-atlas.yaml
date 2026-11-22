@@ -1,0 +1,11 @@
+services:
+  poly-vector-racer:
+    environment:
+      STUNT_WORLD_ATLAS: /app/data/world-atlas
+    volumes:
+      - type: bind
+        source: ${WORLD_ATLAS_DIR:?Set WORLD_ATLAS_DIR to the absolute scenery directory}
+        target: /app/data/world-atlas
+        read_only: true
+        bind:
+          create_host_path: false

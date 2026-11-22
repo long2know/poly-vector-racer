@@ -80,4 +80,7 @@ public sealed record FlightSnapshot(
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlightRangeState? Training { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlightDuelState? Duel { get; init; }
 }
